@@ -8,6 +8,8 @@ const Navigation: React.FC = () => {
         <ul className="flex space-x-2">
           <li><Link to="/main_window" className="btn btn-ghost btn-sm">Interview</Link></li>
           <li><Link to="/knowledge" className="btn btn-ghost btn-sm">Knowledge Base</Link></li>
+          <li><Link to="/context" className="btn btn-ghost btn-sm">Context</Link></li>
+          <li><Link to="/prompts" className="btn btn-ghost btn-sm">Prompts</Link></li>
           <li><Link to="/settings" className="btn btn-ghost btn-sm">Settings</Link></li>
         </ul>
       </div>

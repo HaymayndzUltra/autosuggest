@@ -9,6 +9,7 @@ declare global {
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import Timer from "../components/Timer";
 import { useKnowledgeBase } from "../contexts/KnowledgeBaseContext";
+import { usePrompt } from "../contexts/PromptContext";
 import ErrorDisplay from "../components/ErrorDisplay";
 import { useError } from "../contexts/ErrorContext";
 import { useInterview } from "../contexts/InterviewContext";
@@ -16,6 +17,7 @@ import ReactMarkdown from 'react-markdown';
 
 const InterviewPage: React.FC = () => {
   const { knowledgeBase, conversations, addConversation, clearConversations } = useKnowledgeBase();
+  const { promptConfig, buildSystemMessage } = usePrompt();
   const { error, setError, clearError } = useError();
   const {
     currentText,
@@ -80,11 +82,40 @@ const InterviewPage: React.FC = () => {
     setIsLoading(true);
     try {
       const config = await window.electronAPI.getConfig();
-      const messages = [
+      
+      // Build messages array with system prompts if enabled
+      const messages = [];
+      
+      // DEBUG: Log prompt configuration
+      console.log('🔧 PROMPT DEBUG INFO:');
+      console.log('promptConfig.enabled:', promptConfig.enabled);
+      console.log('promptConfig.behaviorEnabled:', promptConfig.behaviorEnabled);
+      console.log('promptConfig.languageEnabled:', promptConfig.languageEnabled);
+      console.log('promptConfig.responseStyleEnabled:', promptConfig.responseStyleEnabled);
+      
+      // Add system message if prompts are enabled
+      if (promptConfig.enabled) {
+        const systemMessage = buildSystemMessage();
+        console.log('📝 System Message Length:', systemMessage.length);
+        console.log('📝 System Message Preview:', systemMessage.substring(0, 200) + '...');
+        
+        if (systemMessage) {
+          messages.push({ role: "system", content: systemMessage });
+        }
+      } else {
+        console.log('❌ System prompts are DISABLED');
+      }
+      
+      // Add knowledge base and conversation history
+      messages.push(
         ...knowledgeBase.map(item => ({ role: "user", content: item })),
         ...conversations,
         { role: "user", content: contentToProcess }
-      ];
+      );
+
+      // DEBUG: Log complete messages array
+      console.log('📤 Complete Messages Array:', messages);
+      console.log('📤 Messages Count:', messages.length);
 
       const response = await window.electronAPI.callOpenAI({
         config: config,
@@ -286,6 +317,11 @@ const InterviewPage: React.FC = () => {
           />
           <span>Auto GPT</span>
         </label>
+        
+        {/* System Prompts Status Indicator */}
+        <div className={`badge ${promptConfig.enabled ? 'badge-success' : 'badge-error'} badge-sm`}>
+          {promptConfig.enabled ? '🟢 Prompts: ON' : '🔴 Prompts: OFF'}
+        </div>
       </div>
       <div className="flex flex-1 space-x-2 overflow-hidden">
         <div className="flex-1 flex flex-col bg-base-200 p-2 rounded-lg">
@@ -307,12 +343,46 @@ const InterviewPage: React.FC = () => {
             ref={aiResponseRef}
             className="flex-1 overflow-auto bg-base-100 p-2 rounded mb-1 min-h-[80px]"
           >
-            <h2 className="text-lg font-bold mb-1">AI Response:</h2>
-            <ReactMarkdown className="whitespace-pre-wrap markdown-body" components={{
-              p: ({node, ...props}) => <p style={{whiteSpace: 'pre-wrap'}} {...props} />
-            }}>
-              {displayedAiResult}
-            </ReactMarkdown>
+            <h2 className="text-lg font-bold mb-2">AI Response:</h2>
+            
+            {/* Display Q&A pairs from conversation history */}
+            {conversations.length > 0 ? (
+              <div className="space-y-4">
+                {conversations.map((conv, index) => {
+                  // Only show assistant responses with their corresponding user questions
+                  if (conv.role === 'assistant') {
+                    const userQuestion = conversations[index - 1];
+                    return (
+                      <div key={index} className="border-b border-base-300 pb-4 last:border-b-0">
+                        {userQuestion && (
+                          <div className="mb-2 p-2 bg-base-200 rounded text-sm">
+                            <span className="font-medium text-primary">📝 Question:</span>
+                            <div className="mt-1 text-base-content/80">
+                              "{userQuestion.content}"
+                            </div>
+                          </div>
+                        )}
+                        <div className="p-2 bg-primary/10 rounded">
+                          <span className="font-medium text-primary">💬 Answer:</span>
+                          <div className="mt-1">
+                            <ReactMarkdown className="whitespace-pre-wrap markdown-body" components={{
+                              p: ({node, ...props}) => <p style={{whiteSpace: 'pre-wrap'}} {...props} />
+                            }}>
+                              {conv.content}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
+              </div>
+            ) : (
+              <div className="text-base-content/60 italic">
+                No responses yet. Start recording and ask questions!
+              </div>
+            )}
           </div>
           <div className="flex justify-between mt-1">
             <button
@@ -328,6 +398,21 @@ const InterviewPage: React.FC = () => {
               Clear AI Result
             </button>
           </div>
+          
+          {/* System Message Preview */}
+          {promptConfig.enabled && (
+            <div className="collapse collapse-arrow bg-base-200 mt-2">
+              <input type="checkbox" />
+              <div className="collapse-title text-sm font-medium">
+                🔍 Preview System Message ({buildSystemMessage().length} chars)
+              </div>
+              <div className="collapse-content">
+                <div className="text-xs text-base-content/70 whitespace-pre-wrap max-h-40 overflow-auto bg-base-100 p-2 rounded">
+                  {buildSystemMessage()}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
