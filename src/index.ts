@@ -491,3 +491,78 @@ ipcMain.handle("stop-deepgram", () => {
     deepgramConnection = null;
   }
 });
+
+// IPC handlers for loading context and prompt files
+ipcMain.handle("load-context-files", async () => {
+  try {
+    const contextDir = path.join(__dirname, '..', 'context');
+    const files = {
+      resume: '',
+      jobPost: '',
+      discoveryQuestions: '',
+      skillsKnowledge: '',
+      workflowMethod: ''
+    };
+
+    // Read each context file
+    const fileMappings = [
+      { key: 'resume', filename: 'resume.md' },
+      { key: 'jobPost', filename: 'current_job.md' },
+      { key: 'discoveryQuestions', filename: 'discovery_questions.md' },
+      { key: 'skillsKnowledge', filename: 'skills_knowledge.md' },
+      { key: 'workflowMethod', filename: 'workflow_method.md' }
+    ];
+
+    for (const mapping of fileMappings) {
+      const filePath = path.join(contextDir, mapping.filename);
+      if (fs.existsSync(filePath)) {
+        files[mapping.key] = fs.readFileSync(filePath, 'utf8');
+      }
+    }
+
+    return files;
+  } catch (error) {
+    console.error('Failed to load context files:', error);
+    return {
+      resume: '',
+      jobPost: '',
+      discoveryQuestions: '',
+      skillsKnowledge: '',
+      workflowMethod: ''
+    };
+  }
+});
+
+ipcMain.handle("load-prompt-files", async () => {
+  try {
+    const promptsDir = path.join(__dirname, '..', 'prompts');
+    const files = {
+      behaviorRules: '',
+      languageGuide: '',
+      responseStyle: ''
+    };
+
+    // Read each prompt file
+    const fileMappings = [
+      { key: 'behaviorRules', filename: 'behavior_rules.md' },
+      { key: 'languageGuide', filename: 'language_guide.md' },
+      { key: 'responseStyle', filename: 'response_style.md' }
+    ];
+
+    for (const mapping of fileMappings) {
+      const filePath = path.join(promptsDir, mapping.filename);
+      if (fs.existsSync(filePath)) {
+        files[mapping.key] = fs.readFileSync(filePath, 'utf8');
+      }
+    }
+
+    return files;
+  } catch (error) {
+    console.error('Failed to load prompt files:', error);
+    return {
+      behaviorRules: '',
+      languageGuide: '',
+      responseStyle: ''
+    };
+  }
+});

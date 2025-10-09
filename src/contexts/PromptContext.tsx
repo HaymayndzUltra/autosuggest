@@ -250,25 +250,14 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   const loadPromptsFromFiles = async (): Promise<void> => {
     try {
-      // Try to load from files if they exist
-      const behaviorResponse = await fetch('/prompts/behavior_rules.md');
-      const languageResponse = await fetch('/prompts/language_guide.md');
-      const responseStyleResponse = await fetch('/prompts/response_style.md');
-
-      if (behaviorResponse.ok) {
-        const behaviorText = await behaviorResponse.text();
-        setPromptConfig(prev => ({ ...prev, behaviorRules: behaviorText }));
-      }
-
-      if (languageResponse.ok) {
-        const languageText = await languageResponse.text();
-        setPromptConfig(prev => ({ ...prev, languageGuide: languageText }));
-      }
-
-      if (responseStyleResponse.ok) {
-        const responseStyleText = await responseStyleResponse.text();
-        setPromptConfig(prev => ({ ...prev, responseStyle: responseStyleText }));
-      }
+      // Use IPC handler to load prompt files from file system
+      const promptFiles = await window.electronAPI.loadPromptFiles();
+      setPromptConfig(prev => ({
+        ...prev,
+        behaviorRules: promptFiles.behaviorRules || prev.behaviorRules,
+        languageGuide: promptFiles.languageGuide || prev.languageGuide,
+        responseStyle: promptFiles.responseStyle || prev.responseStyle
+      }));
     } catch (error) {
       console.warn('Could not load prompt files, using defaults:', error);
     }
@@ -276,37 +265,16 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   const loadContextFromFiles = async (): Promise<void> => {
     try {
-      // Try to load context files if they exist
-      const resumeResponse = await fetch('/context/resume.md');
-      const jobPostResponse = await fetch('/context/current_job.md');
-      const discoveryResponse = await fetch('/context/discovery_questions.md');
-      const skillsResponse = await fetch('/context/skills_knowledge.md');
-      const workflowResponse = await fetch('/context/workflow_method.md');
-
-      if (resumeResponse.ok) {
-        const resumeText = await resumeResponse.text();
-        setContextData(prev => ({ ...prev, resume: resumeText }));
-      }
-
-      if (jobPostResponse.ok) {
-        const jobPostText = await jobPostResponse.text();
-        setContextData(prev => ({ ...prev, jobPost: jobPostText }));
-      }
-
-      if (discoveryResponse.ok) {
-        const discoveryText = await discoveryResponse.text();
-        setContextData(prev => ({ ...prev, discoveryQuestions: discoveryText }));
-      }
-
-      if (skillsResponse.ok) {
-        const skillsText = await skillsResponse.text();
-        setContextData(prev => ({ ...prev, skillsKnowledge: skillsText }));
-      }
-
-      if (workflowResponse.ok) {
-        const workflowText = await workflowResponse.text();
-        setContextData(prev => ({ ...prev, workflowMethod: workflowText }));
-      }
+      // Use IPC handler to load context files from file system
+      const contextFiles = await window.electronAPI.loadContextFiles();
+      setContextData(prev => ({
+        ...prev,
+        resume: contextFiles.resume || prev.resume,
+        jobPost: contextFiles.jobPost || prev.jobPost,
+        discoveryQuestions: contextFiles.discoveryQuestions || prev.discoveryQuestions,
+        skillsKnowledge: contextFiles.skillsKnowledge || prev.skillsKnowledge,
+        workflowMethod: contextFiles.workflowMethod || prev.workflowMethod
+      }));
     } catch (error) {
       console.warn('Could not load context files, using defaults:', error);
     }
@@ -315,25 +283,6 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   useEffect(() => {
     loadPromptsFromFiles();
     loadContextFromFiles();
-  }, []);
-
-  // Load prompt config from electron-store on initialization
-  useEffect(() => {
-    const loadConfigFromStore = async () => {
-      try {
-        const config = await window.electronAPI.getConfig();
-        if (config && config.promptConfig) {
-          console.log('📂 Loading prompt config from electron-store:', config.promptConfig);
-          setPromptConfig(config.promptConfig);
-        } else {
-          console.log('📂 No prompt config found in electron-store, using defaults');
-        }
-      } catch (error) {
-        console.warn('Failed to load prompt config from electron-store:', error);
-      }
-    };
-    
-    loadConfigFromStore();
   }, []);
 
   // Save prompt config and context data to electron-store when they change

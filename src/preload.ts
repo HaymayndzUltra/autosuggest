@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   parsePDF: (buffer: ArrayBuffer) => ipcRenderer.invoke('parsePDF', buffer),
   processImage: (path: string) => ipcRenderer.invoke('process-image', path),
   highlightCode: (code: string, language: string) => ipcRenderer.invoke('highlight-code', code, language),
+  loadContextFiles: () => ipcRenderer.invoke('load-context-files'),
+  loadPromptFiles: () => ipcRenderer.invoke('load-prompt-files'),
   ipcRenderer: {
     invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
     on: (channel: string, listener: (event: any, ...args: any[]) => void) => {

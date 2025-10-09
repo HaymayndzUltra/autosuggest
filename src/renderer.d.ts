@@ -8,6 +8,18 @@ export interface ElectronAPI {
   parsePDF: (pdfBuffer: ArrayBuffer) => Promise<{ text: string, error?: string }>;
   processImage: (imagePath: string) => Promise<string>;
   highlightCode: (code: string, language: string) => Promise<string>;
+  loadContextFiles: () => Promise<{
+    resume: string;
+    jobPost: string;
+    discoveryQuestions: string;
+    skillsKnowledge: string;
+    workflowMethod: string;
+  }>;
+  loadPromptFiles: () => Promise<{
+    behaviorRules: string;
+    languageGuide: string;
+    responseStyle: string;
+  }>;
   getSystemAudioStream: () => Promise<string[]>;
   ipcRenderer: {
     removeAllListeners: any;
