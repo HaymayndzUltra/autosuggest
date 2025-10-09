@@ -11,6 +11,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   highlightCode: (code: string, language: string) => ipcRenderer.invoke('highlight-code', code, language),
   loadContextFiles: () => ipcRenderer.invoke('load-context-files'),
   loadPromptFiles: () => ipcRenderer.invoke('load-prompt-files'),
+  onContextFilesUpdated: (callback: (payload: unknown) => void) => {
+    const listener = (_event: unknown, data: unknown) => callback(data);
+    ipcRenderer.on('context-files-updated', listener);
+    return () => ipcRenderer.removeListener('context-files-updated', listener);
+  },
+  onPromptFilesUpdated: (callback: (payload: unknown) => void) => {
+    const listener = (_event: unknown, data: unknown) => callback(data);
+    ipcRenderer.on('prompt-files-updated', listener);
+    return () => ipcRenderer.removeListener('prompt-files-updated', listener);
+  },
   ipcRenderer: {
     invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
     on: (channel: string, listener: (event: any, ...args: any[]) => void) => {

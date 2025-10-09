@@ -4,11 +4,43 @@ import { useError } from '../contexts/ErrorContext';
 import ErrorDisplay from '../components/ErrorDisplay';
 
 const Context: React.FC = () => {
-  const { contextData, updateContextData, loadContextFromFiles } = usePrompt();
+  const { contextData, contextFileStatus, contextLastUpdated, updateContextData, loadContextFromFiles } = usePrompt();
   const { error, setError, clearError } = useError();
   const [activeTab, setActiveTab] = useState<'resume' | 'jobPost' | 'workflow' | 'skills' | 'discovery'>('resume');
   const [editingContent, setEditingContent] = useState('');
   const [isEditing, setIsEditing] = useState(false);
+
+  type StatusValue = typeof contextFileStatus.resume;
+
+  const statusStyles: Record<StatusValue, { label: string; className: string }> = {
+    loading: { label: 'Loading…', className: 'badge-warning' },
+    loaded: { label: 'Loaded', className: 'badge-success' },
+    missing: { label: 'Missing', className: 'badge-neutral' },
+    error: { label: 'Error', className: 'badge-error' },
+  };
+
+  const contextStatusItems = [
+    { id: 'resume', label: 'Resume', icon: '📄', status: contextFileStatus.resume },
+    { id: 'jobPost', label: 'Job Post', icon: '💼', status: contextFileStatus.jobPost },
+    { id: 'workflow', label: 'Workflow', icon: '⚙️', status: contextFileStatus.workflowMethod },
+    { id: 'skills', label: 'Skills', icon: '🛠️', status: contextFileStatus.skillsKnowledge },
+    { id: 'discovery', label: 'Discovery Q&A', icon: '❓', status: contextFileStatus.discoveryQuestions },
+  ] as const;
+
+  const getStatusForTab = (tab: typeof activeTab): StatusValue => {
+    switch (tab) {
+      case 'resume':
+        return contextFileStatus.resume;
+      case 'jobPost':
+        return contextFileStatus.jobPost;
+      case 'workflow':
+        return contextFileStatus.workflowMethod;
+      case 'skills':
+        return contextFileStatus.skillsKnowledge;
+      case 'discovery':
+        return contextFileStatus.discoveryQuestions;
+    }
+  };
 
   const getCurrentContent = () => {
     switch (activeTab) {
@@ -83,11 +115,39 @@ const Context: React.FC = () => {
     { id: 'discovery', label: 'Discovery Q&A', icon: '❓' },
   ] as const;
 
+  const activeStatus = getStatusForTab(activeTab);
+
   return (
     <div className="max-w-6xl mx-auto p-4">
       <ErrorDisplay error={error} onClose={clearError} />
       <h1 className="text-2xl font-bold mb-4">Context Management</h1>
-      
+
+      <div className="card bg-base-200 mb-6">
+        <div className="card-body">
+          <h2 className="card-title text-lg">Context File Status</h2>
+          <div className="flex flex-wrap gap-3">
+            {contextStatusItems.map((item) => {
+              const style = statusStyles[item.status];
+              return (
+                <div
+                  key={item.id}
+                  className="flex items-center gap-2 rounded-lg bg-base-100 px-3 py-2 border border-base-300"
+                >
+                  <span>{item.icon}</span>
+                  <span className="text-sm font-medium">{item.label}</span>
+                  <span className={`badge badge-sm ${style.className}`}>{style.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          {contextLastUpdated && (
+            <p className="text-xs text-base-content/60 mt-3">
+              Auto-synced at {new Date(contextLastUpdated).toLocaleString()}
+            </p>
+          )}
+        </div>
+      </div>
+
       {/* Tab Navigation */}
       <div className="tabs tabs-boxed mb-6">
         {tabs.map((tab) => (
@@ -106,7 +166,11 @@ const Context: React.FC = () => {
         <div className="card-body">
           <div className="flex justify-between items-center mb-4">
             <h2 className="card-title">{getTabTitle(activeTab)}</h2>
-            <div className="flex space-x-2">
+            <div className="flex items-center gap-3">
+              <span className={`badge ${statusStyles[activeStatus].className}`}>
+                {statusStyles[activeStatus].label}
+              </span>
+              <div className="flex space-x-2">
               {!isEditing ? (
                 <button onClick={handleEdit} className="btn btn-primary btn-sm">
                   Edit
@@ -124,6 +188,7 @@ const Context: React.FC = () => {
               <button onClick={handleReset} className="btn btn-outline btn-sm">
                 Reset to File
               </button>
+            </div>
             </div>
           </div>
 

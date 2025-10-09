@@ -4,10 +4,25 @@ import { useError } from '../contexts/ErrorContext';
 import ErrorDisplay from '../components/ErrorDisplay';
 
 const Prompts: React.FC = () => {
-  const { promptConfig, updatePromptConfig, loadPromptsFromFiles } = usePrompt();
+  const { promptConfig, promptFileStatus, promptLastUpdated, updatePromptConfig, loadPromptsFromFiles } = usePrompt();
   const { error, setError, clearError } = useError();
   const [editingPrompt, setEditingPrompt] = useState<'behavior' | 'language' | 'response' | null>(null);
   const [tempContent, setTempContent] = useState('');
+
+  type StatusValue = typeof promptFileStatus.behaviorRules;
+
+  const statusStyles: Record<StatusValue, { label: string; className: string }> = {
+    loading: { label: 'Loading…', className: 'badge-warning' },
+    loaded: { label: 'Loaded', className: 'badge-success' },
+    missing: { label: 'Missing', className: 'badge-neutral' },
+    error: { label: 'Error', className: 'badge-error' },
+  };
+
+  const promptStatusItems = [
+    { id: 'behavior', label: 'Behavior Rules', icon: '🧠', status: promptFileStatus.behaviorRules },
+    { id: 'language', label: 'Language Guide', icon: '🗣️', status: promptFileStatus.languageGuide },
+    { id: 'response', label: 'Response Style', icon: '📝', status: promptFileStatus.responseStyle },
+  ] as const;
 
   const handleEditPrompt = (type: 'behavior' | 'language' | 'response') => {
     setEditingPrompt(type);
@@ -80,7 +95,33 @@ const Prompts: React.FC = () => {
     <div className="max-w-6xl mx-auto p-4">
       <ErrorDisplay error={error} onClose={clearError} />
       <h1 className="text-2xl font-bold mb-4">System Prompts Management</h1>
-      
+
+      <div className="card bg-base-200 mb-6">
+        <div className="card-body">
+          <h2 className="card-title text-lg">Prompt File Status</h2>
+          <div className="flex flex-wrap gap-3">
+            {promptStatusItems.map((item) => {
+              const style = statusStyles[item.status];
+              return (
+                <div
+                  key={item.id}
+                  className="flex items-center gap-2 rounded-lg bg-base-100 px-3 py-2 border border-base-300"
+                >
+                  <span>{item.icon}</span>
+                  <span className="text-sm font-medium">{item.label}</span>
+                  <span className={`badge badge-sm ${style.className}`}>{style.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          {promptLastUpdated && (
+            <p className="text-xs text-base-content/60 mt-3">
+              Auto-synced at {new Date(promptLastUpdated).toLocaleString()}
+            </p>
+          )}
+        </div>
+      </div>
+
       <div className="mb-6">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg font-semibold">Current Configuration</h2>
@@ -103,7 +144,12 @@ const Prompts: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <div className="card bg-base-200 p-4">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="font-medium">Behavior Rules</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="font-medium">Behavior Rules</h3>
+                <span className={`badge badge-sm ${statusStyles[promptFileStatus.behaviorRules].className}`}>
+                  {statusStyles[promptFileStatus.behaviorRules].label}
+                </span>
+              </div>
               <input
                 type="checkbox"
                 checked={promptConfig.behaviorEnabled}
@@ -121,10 +167,15 @@ const Prompts: React.FC = () => {
               Edit
             </button>
           </div>
-          
+
           <div className="card bg-base-200 p-4">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="font-medium">Language Guide</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="font-medium">Language Guide</h3>
+                <span className={`badge badge-sm ${statusStyles[promptFileStatus.languageGuide].className}`}>
+                  {statusStyles[promptFileStatus.languageGuide].label}
+                </span>
+              </div>
               <input
                 type="checkbox"
                 checked={promptConfig.languageEnabled}
@@ -142,10 +193,15 @@ const Prompts: React.FC = () => {
               Edit
             </button>
           </div>
-          
+
           <div className="card bg-base-200 p-4">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="font-medium">Response Style</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="font-medium">Response Style</h3>
+                <span className={`badge badge-sm ${statusStyles[promptFileStatus.responseStyle].className}`}>
+                  {statusStyles[promptFileStatus.responseStyle].label}
+                </span>
+              </div>
               <input
                 type="checkbox"
                 checked={promptConfig.responseStyleEnabled}
