@@ -18,9 +18,45 @@ interface ContextData {
   workflowMethod: string;
 }
 
+type FileStatus = 'loading' | 'loaded' | 'missing' | 'error';
+
+interface ContextFileStatus {
+  resume: FileStatus;
+  jobPost: FileStatus;
+  discoveryQuestions: FileStatus;
+  skillsKnowledge: FileStatus;
+  workflowMethod: FileStatus;
+}
+
+interface PromptFileStatus {
+  behaviorRules: FileStatus;
+  languageGuide: FileStatus;
+  responseStyle: FileStatus;
+}
+
+interface ContextFilesPayload {
+  data: ContextData;
+  status: ContextFileStatus;
+  timestamp: number;
+}
+
+interface PromptFilesPayload {
+  data: {
+    behaviorRules: string;
+    languageGuide: string;
+    responseStyle: string;
+  };
+  status: PromptFileStatus;
+  timestamp: number;
+}
+
 interface PromptContextType {
   promptConfig: PromptConfig;
   contextData: ContextData;
+  contextFileStatus: ContextFileStatus;
+  promptFileStatus: PromptFileStatus;
+  contextLastUpdated: number | null;
+  promptLastUpdated: number | null;
   updatePromptConfig: (config: Partial<PromptConfig>) => void;
   updateContextData: (data: Partial<ContextData>) => void;
   buildSystemMessage: () => string;
@@ -189,6 +225,23 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     workflowMethod: '',
   });
 
+  const [contextFileStatus, setContextFileStatus] = useState<ContextFileStatus>({
+    resume: 'loading',
+    jobPost: 'loading',
+    discoveryQuestions: 'loading',
+    skillsKnowledge: 'loading',
+    workflowMethod: 'loading',
+  });
+
+  const [promptFileStatus, setPromptFileStatus] = useState<PromptFileStatus>({
+    behaviorRules: 'loading',
+    languageGuide: 'loading',
+    responseStyle: 'loading',
+  });
+
+  const [contextLastUpdated, setContextLastUpdated] = useState<number | null>(null);
+  const [promptLastUpdated, setPromptLastUpdated] = useState<number | null>(null);
+
   const updatePromptConfig = (config: Partial<PromptConfig>) => {
     setPromptConfig(prev => ({ ...prev, ...config }));
   };
@@ -225,7 +278,12 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       parts.push('=== YOUR DEVELOPMENT METHODOLOGY ===');
       parts.push(contextData.workflowMethod);
     }
-    
+
+    if (contextData.discoveryQuestions) {
+      parts.push('=== DISCOVERY QUESTIONS (ASK WHEN INFORMATION IS MISSING) ===');
+      parts.push(contextData.discoveryQuestions);
+    }
+
     if (promptConfig.behaviorEnabled) {
       parts.push('=== BEHAVIOR RULES (MANDATORY) ===');
       parts.push(promptConfig.behaviorRules);
@@ -243,42 +301,123 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
     // Add strong closing instruction
     parts.push('=== FINAL INSTRUCTION ===');
-    parts.push('REMEMBER: Base ALL answers on the candidate profile above. Reference specific projects, skills, and experience from the resume. Align responses with job post requirements. You MUST respond as a Filipino developer using Barok English style, first-person perspective, and the 3-part structure (Summary → Explanation → Closing). This is NOT negotiable.');
+    parts.push('REMEMBER: Base ALL answers on the candidate profile above. Reference specific projects, skills, and experience from the resume. Align responses with job post requirements. You MUST respond as a Filipino developer using Barok English style, first-person perspective, and keep every answer within four sentences following the Direct Answer → Quick Context → Punchy Close structure. When information is missing, ask the most relevant discovery questions before finalizing your answer. This is NOT negotiable.');
 
     return parts.join('\n\n');
   };
 
   const loadPromptsFromFiles = async (): Promise<void> => {
+    setPromptFileStatus({
+      behaviorRules: 'loading',
+      languageGuide: 'loading',
+      responseStyle: 'loading',
+    });
+
     try {
-      // Use IPC handler to load prompt files from file system
       const promptFiles = await window.electronAPI.loadPromptFiles();
       setPromptConfig(prev => ({
         ...prev,
-        behaviorRules: promptFiles.behaviorRules || prev.behaviorRules,
-        languageGuide: promptFiles.languageGuide || prev.languageGuide,
-        responseStyle: promptFiles.responseStyle || prev.responseStyle
+        behaviorRules: promptFiles.data.behaviorRules,
+        languageGuide: promptFiles.data.languageGuide,
+        responseStyle: promptFiles.data.responseStyle,
       }));
+      setPromptFileStatus({
+        behaviorRules: promptFiles.status.behaviorRules,
+        languageGuide: promptFiles.status.languageGuide,
+        responseStyle: promptFiles.status.responseStyle,
+      });
+      setPromptLastUpdated(promptFiles.timestamp);
     } catch (error) {
       console.warn('Could not load prompt files, using defaults:', error);
+      setPromptFileStatus({
+        behaviorRules: 'error',
+        languageGuide: 'error',
+        responseStyle: 'error',
+      });
     }
   };
 
   const loadContextFromFiles = async (): Promise<void> => {
+    setContextFileStatus({
+      resume: 'loading',
+      jobPost: 'loading',
+      discoveryQuestions: 'loading',
+      skillsKnowledge: 'loading',
+      workflowMethod: 'loading',
+    });
+
     try {
-      // Use IPC handler to load context files from file system
       const contextFiles = await window.electronAPI.loadContextFiles();
-      setContextData(prev => ({
-        ...prev,
-        resume: contextFiles.resume || prev.resume,
-        jobPost: contextFiles.jobPost || prev.jobPost,
-        discoveryQuestions: contextFiles.discoveryQuestions || prev.discoveryQuestions,
-        skillsKnowledge: contextFiles.skillsKnowledge || prev.skillsKnowledge,
-        workflowMethod: contextFiles.workflowMethod || prev.workflowMethod
-      }));
+      setContextData({
+        resume: contextFiles.data.resume,
+        jobPost: contextFiles.data.jobPost,
+        discoveryQuestions: contextFiles.data.discoveryQuestions,
+        skillsKnowledge: contextFiles.data.skillsKnowledge,
+        workflowMethod: contextFiles.data.workflowMethod,
+      });
+      setContextFileStatus({
+        resume: contextFiles.status.resume,
+        jobPost: contextFiles.status.jobPost,
+        discoveryQuestions: contextFiles.status.discoveryQuestions,
+        skillsKnowledge: contextFiles.status.skillsKnowledge,
+        workflowMethod: contextFiles.status.workflowMethod,
+      });
+      setContextLastUpdated(contextFiles.timestamp);
     } catch (error) {
       console.warn('Could not load context files, using defaults:', error);
+      setContextFileStatus({
+        resume: 'error',
+        jobPost: 'error',
+        discoveryQuestions: 'error',
+        skillsKnowledge: 'error',
+        workflowMethod: 'error',
+      });
     }
   };
+
+  useEffect(() => {
+    const unsubscribeContext = window.electronAPI.onContextFilesUpdated((payload: ContextFilesPayload) => {
+      setContextData({
+        resume: payload.data.resume,
+        jobPost: payload.data.jobPost,
+        discoveryQuestions: payload.data.discoveryQuestions,
+        skillsKnowledge: payload.data.skillsKnowledge,
+        workflowMethod: payload.data.workflowMethod,
+      });
+      setContextFileStatus({
+        resume: payload.status.resume,
+        jobPost: payload.status.jobPost,
+        discoveryQuestions: payload.status.discoveryQuestions,
+        skillsKnowledge: payload.status.skillsKnowledge,
+        workflowMethod: payload.status.workflowMethod,
+      });
+      setContextLastUpdated(payload.timestamp);
+    });
+
+    const unsubscribePrompts = window.electronAPI.onPromptFilesUpdated((payload: PromptFilesPayload) => {
+      setPromptConfig(prev => ({
+        ...prev,
+        behaviorRules: payload.data.behaviorRules,
+        languageGuide: payload.data.languageGuide,
+        responseStyle: payload.data.responseStyle,
+      }));
+      setPromptFileStatus({
+        behaviorRules: payload.status.behaviorRules,
+        languageGuide: payload.status.languageGuide,
+        responseStyle: payload.status.responseStyle,
+      });
+      setPromptLastUpdated(payload.timestamp);
+    });
+
+    return () => {
+      if (unsubscribeContext) {
+        unsubscribeContext();
+      }
+      if (unsubscribePrompts) {
+        unsubscribePrompts();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     loadPromptsFromFiles();
@@ -312,6 +451,10 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       value={{
         promptConfig,
         contextData,
+        contextFileStatus,
+        promptFileStatus,
+        contextLastUpdated,
+        promptLastUpdated,
         updatePromptConfig,
         updateContextData,
         buildSystemMessage,

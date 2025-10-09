@@ -1,3 +1,37 @@
+type FileStatus = 'loaded' | 'missing' | 'error';
+
+export interface ContextFilesPayload {
+  data: {
+    resume: string;
+    jobPost: string;
+    discoveryQuestions: string;
+    skillsKnowledge: string;
+    workflowMethod: string;
+  };
+  status: {
+    resume: FileStatus;
+    jobPost: FileStatus;
+    discoveryQuestions: FileStatus;
+    skillsKnowledge: FileStatus;
+    workflowMethod: FileStatus;
+  };
+  timestamp: number;
+}
+
+export interface PromptFilesPayload {
+  data: {
+    behaviorRules: string;
+    languageGuide: string;
+    responseStyle: string;
+  };
+  status: {
+    behaviorRules: FileStatus;
+    languageGuide: FileStatus;
+    responseStyle: FileStatus;
+  };
+  timestamp: number;
+}
+
 export interface ElectronAPI {
   saveTempAudioFile(audioEncoded: ArrayBuffer): unknown;
   transcribeAudioFile(tempFilePath: any, arg1: { primaryLanguage: string; secondaryLanguage: string; api_base: any; openai_key: any; }): TranscriptionResult | PromiseLike<TranscriptionResult>;
@@ -8,18 +42,10 @@ export interface ElectronAPI {
   parsePDF: (pdfBuffer: ArrayBuffer) => Promise<{ text: string, error?: string }>;
   processImage: (imagePath: string) => Promise<string>;
   highlightCode: (code: string, language: string) => Promise<string>;
-  loadContextFiles: () => Promise<{
-    resume: string;
-    jobPost: string;
-    discoveryQuestions: string;
-    skillsKnowledge: string;
-    workflowMethod: string;
-  }>;
-  loadPromptFiles: () => Promise<{
-    behaviorRules: string;
-    languageGuide: string;
-    responseStyle: string;
-  }>;
+  loadContextFiles: () => Promise<ContextFilesPayload>;
+  loadPromptFiles: () => Promise<PromptFilesPayload>;
+  onContextFilesUpdated: (callback: (payload: ContextFilesPayload) => void) => () => void;
+  onPromptFilesUpdated: (callback: (payload: PromptFilesPayload) => void) => () => void;
   getSystemAudioStream: () => Promise<string[]>;
   ipcRenderer: {
     removeAllListeners: any;

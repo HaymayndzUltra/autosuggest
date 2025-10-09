@@ -19,6 +19,181 @@ import path from "path";
 import { Buffer } from "buffer";
 import { createClient, LiveTranscriptionEvents } from "@deepgram/sdk";
 
+type FileStatus = "loaded" | "missing" | "error";
+
+interface ContextFilesPayload {
+  data: {
+    resume: string;
+    jobPost: string;
+    discoveryQuestions: string;
+    skillsKnowledge: string;
+    workflowMethod: string;
+  };
+  status: {
+    resume: FileStatus;
+    jobPost: FileStatus;
+    discoveryQuestions: FileStatus;
+    skillsKnowledge: FileStatus;
+    workflowMethod: FileStatus;
+  };
+  timestamp: number;
+}
+
+interface PromptFilesPayload {
+  data: {
+    behaviorRules: string;
+    languageGuide: string;
+    responseStyle: string;
+  };
+  status: {
+    behaviorRules: FileStatus;
+    languageGuide: FileStatus;
+    responseStyle: FileStatus;
+  };
+  timestamp: number;
+}
+
+let mainWindow: BrowserWindow | null = null;
+const contextDir = path.join(__dirname, "..", "context");
+const promptsDir = path.join(__dirname, "..", "prompts");
+
+const broadcastToRenderers = (channel: string, payload: unknown) => {
+  BrowserWindow.getAllWindows().forEach((window) => {
+    window.webContents.send(channel, payload);
+  });
+};
+
+const readContextFilesFromDisk = (): ContextFilesPayload => {
+  const payload: ContextFilesPayload = {
+    data: {
+      resume: "",
+      jobPost: "",
+      discoveryQuestions: "",
+      skillsKnowledge: "",
+      workflowMethod: "",
+    },
+    status: {
+      resume: "missing",
+      jobPost: "missing",
+      discoveryQuestions: "missing",
+      skillsKnowledge: "missing",
+      workflowMethod: "missing",
+    },
+    timestamp: Date.now(),
+  };
+
+  try {
+    const fileMappings: Array<{ key: keyof ContextFilesPayload["data"]; filename: string }> = [
+      { key: "resume", filename: "resume.md" },
+      { key: "jobPost", filename: "current_job.md" },
+      { key: "discoveryQuestions", filename: "discovery_questions.md" },
+      { key: "skillsKnowledge", filename: "skills_knowledge.md" },
+      { key: "workflowMethod", filename: "workflow_method.md" },
+    ];
+
+    fileMappings.forEach(({ key, filename }) => {
+      const filePath = path.join(contextDir, filename);
+      if (fs.existsSync(filePath)) {
+        payload.data[key] = fs.readFileSync(filePath, "utf8");
+        payload.status[key] = "loaded";
+      }
+    });
+  } catch (error) {
+    console.error("Failed to load context files:", error);
+    payload.status = {
+      resume: "error",
+      jobPost: "error",
+      discoveryQuestions: "error",
+      skillsKnowledge: "error",
+      workflowMethod: "error",
+    };
+  }
+
+  payload.timestamp = Date.now();
+  return payload;
+};
+
+const readPromptFilesFromDisk = (): PromptFilesPayload => {
+  const payload: PromptFilesPayload = {
+    data: {
+      behaviorRules: "",
+      languageGuide: "",
+      responseStyle: "",
+    },
+    status: {
+      behaviorRules: "missing",
+      languageGuide: "missing",
+      responseStyle: "missing",
+    },
+    timestamp: Date.now(),
+  };
+
+  try {
+    const fileMappings: Array<{ key: keyof PromptFilesPayload["data"]; filename: string }> = [
+      { key: "behaviorRules", filename: "behavior_rules.md" },
+      { key: "languageGuide", filename: "language_guide.md" },
+      { key: "responseStyle", filename: "response_style.md" },
+    ];
+
+    fileMappings.forEach(({ key, filename }) => {
+      const filePath = path.join(promptsDir, filename);
+      if (fs.existsSync(filePath)) {
+        payload.data[key] = fs.readFileSync(filePath, "utf8");
+        payload.status[key] = "loaded";
+      }
+    });
+  } catch (error) {
+    console.error("Failed to load prompt files:", error);
+    payload.status = {
+      behaviorRules: "error",
+      languageGuide: "error",
+      responseStyle: "error",
+    };
+  }
+
+  payload.timestamp = Date.now();
+  return payload;
+};
+
+const setupFileWatchers = () => {
+  let contextWatcherTimer: NodeJS.Timeout | null = null;
+  let promptWatcherTimer: NodeJS.Timeout | null = null;
+
+  if (fs.existsSync(contextDir)) {
+    fs.watch(contextDir, { persistent: false }, (_eventType, filename) => {
+      if (filename && path.extname(filename).toLowerCase() !== ".md") {
+        return;
+      }
+
+      if (contextWatcherTimer) {
+        clearTimeout(contextWatcherTimer);
+      }
+
+      contextWatcherTimer = setTimeout(() => {
+        const payload = readContextFilesFromDisk();
+        broadcastToRenderers("context-files-updated", payload);
+      }, 100);
+    });
+  }
+
+  if (fs.existsSync(promptsDir)) {
+    fs.watch(promptsDir, { persistent: false }, (_eventType, filename) => {
+      if (filename && path.extname(filename).toLowerCase() !== ".md") {
+        return;
+      }
+
+      if (promptWatcherTimer) {
+        clearTimeout(promptWatcherTimer);
+      }
+
+      promptWatcherTimer = setTimeout(() => {
+        const payload = readPromptFilesFromDisk();
+        broadcastToRenderers("prompt-files-updated", payload);
+      }, 100);
+    });
+  }
+};
+
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 import electronSquirrelStartup from "electron-squirrel-startup";
 
@@ -27,7 +202,7 @@ if (electronSquirrelStartup) {
 }
 
 const createWindow = (): void => {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     height: 1000,
     width: 1300,
     webPreferences: {
@@ -38,7 +213,9 @@ const createWindow = (): void => {
     },
   });
 
-  mainWindow.webContents.session.webRequest.onHeadersReceived(
+  const windowRef = mainWindow;
+
+  windowRef.webContents.session.webRequest.onHeadersReceived(
     (details, callback) => {
       callback({
         responseHeaders: {
@@ -51,7 +228,7 @@ const createWindow = (): void => {
     }
   );
 
-  mainWindow.webContents.session.setPermissionRequestHandler(
+  windowRef.webContents.session.setPermissionRequestHandler(
     (webContents, permission, callback) => {
       if (permission === "media") {
         callback(true);
@@ -61,13 +238,17 @@ const createWindow = (): void => {
     }
   );
 
-  mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY + "#/main_window");
-//  mainWindow.webContents.openDevTools();
+  windowRef.loadURL(MAIN_WINDOW_WEBPACK_ENTRY + "#/main_window");
+//  windowRef.webContents.openDevTools();
 
-  mainWindow.webContents.on("did-finish-load", () => {
-    mainWindow.webContents.executeJavaScript(`
+  windowRef.webContents.on("did-finish-load", () => {
+    windowRef.webContents.executeJavaScript(`
       console.log('Applied CSP:', document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content'));
     `);
+  });
+
+  windowRef.on("closed", () => {
+    mainWindow = null;
   });
 };
 
@@ -128,7 +309,15 @@ ipcMain.handle(
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.on("ready", createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  setupFileWatchers();
+
+  const contextPayload = readContextFilesFromDisk();
+  const promptPayload = readPromptFilesFromDisk();
+  broadcastToRenderers("context-files-updated", contextPayload);
+  broadcastToRenderers("prompt-files-updated", promptPayload);
+});
 
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the
@@ -144,6 +333,8 @@ app.on("activate", () => {
   // dock icon is clicked and there are no other windows open.
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
+    broadcastToRenderers("context-files-updated", readContextFilesFromDisk());
+    broadcastToRenderers("prompt-files-updated", readPromptFilesFromDisk());
   }
 });
 
@@ -494,75 +685,9 @@ ipcMain.handle("stop-deepgram", () => {
 
 // IPC handlers for loading context and prompt files
 ipcMain.handle("load-context-files", async () => {
-  try {
-    const contextDir = path.join(__dirname, '..', 'context');
-    const files = {
-      resume: '',
-      jobPost: '',
-      discoveryQuestions: '',
-      skillsKnowledge: '',
-      workflowMethod: ''
-    };
-
-    // Read each context file
-    const fileMappings = [
-      { key: 'resume', filename: 'resume.md' },
-      { key: 'jobPost', filename: 'current_job.md' },
-      { key: 'discoveryQuestions', filename: 'discovery_questions.md' },
-      { key: 'skillsKnowledge', filename: 'skills_knowledge.md' },
-      { key: 'workflowMethod', filename: 'workflow_method.md' }
-    ];
-
-    for (const mapping of fileMappings) {
-      const filePath = path.join(contextDir, mapping.filename);
-      if (fs.existsSync(filePath)) {
-        files[mapping.key] = fs.readFileSync(filePath, 'utf8');
-      }
-    }
-
-    return files;
-  } catch (error) {
-    console.error('Failed to load context files:', error);
-    return {
-      resume: '',
-      jobPost: '',
-      discoveryQuestions: '',
-      skillsKnowledge: '',
-      workflowMethod: ''
-    };
-  }
+  return readContextFilesFromDisk();
 });
 
 ipcMain.handle("load-prompt-files", async () => {
-  try {
-    const promptsDir = path.join(__dirname, '..', 'prompts');
-    const files = {
-      behaviorRules: '',
-      languageGuide: '',
-      responseStyle: ''
-    };
-
-    // Read each prompt file
-    const fileMappings = [
-      { key: 'behaviorRules', filename: 'behavior_rules.md' },
-      { key: 'languageGuide', filename: 'language_guide.md' },
-      { key: 'responseStyle', filename: 'response_style.md' }
-    ];
-
-    for (const mapping of fileMappings) {
-      const filePath = path.join(promptsDir, mapping.filename);
-      if (fs.existsSync(filePath)) {
-        files[mapping.key] = fs.readFileSync(filePath, 'utf8');
-      }
-    }
-
-    return files;
-  } catch (error) {
-    console.error('Failed to load prompt files:', error);
-    return {
-      behaviorRules: '',
-      languageGuide: '',
-      responseStyle: ''
-    };
-  }
+  return readPromptFilesFromDisk();
 });
