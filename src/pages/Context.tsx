@@ -1,14 +1,29 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { usePrompt } from '../contexts/PromptContext';
 import { useError } from '../contexts/ErrorContext';
 import ErrorDisplay from '../components/ErrorDisplay';
 
 const Context: React.FC = () => {
-  const { contextData, updateContextData, loadContextFromFiles } = usePrompt();
+  const { contextData, contextStatus, updateContextData, loadContextFromFiles } = usePrompt();
   const { error, setError, clearError } = useError();
   const [activeTab, setActiveTab] = useState<'resume' | 'jobPost' | 'workflow' | 'skills' | 'discovery'>('resume');
   const [editingContent, setEditingContent] = useState('');
   const [isEditing, setIsEditing] = useState(false);
+
+  const contextStatusCards = useMemo(() => ([
+    { id: 'resume', label: 'Resume', status: contextStatus.resume },
+    { id: 'jobPost', label: 'Job Post', status: contextStatus.jobPost },
+    { id: 'workflow', label: 'Workflow', status: contextStatus.workflowMethod },
+    { id: 'skills', label: 'Skills & Knowledge', status: contextStatus.skillsKnowledge },
+    { id: 'discovery', label: 'Discovery Questions', status: contextStatus.discoveryQuestions },
+  ] as const), [contextStatus]);
+
+  const getStatusBadge = (status: typeof contextStatus.resume) => {
+    if (!status?.exists) return { text: 'Missing file', className: 'badge badge-error badge-sm' };
+    if (!status.hasContent) return { text: 'Loaded (empty)', className: 'badge badge-warning badge-sm' };
+    if (status.error) return { text: 'Error', className: 'badge badge-error badge-sm' };
+    return { text: 'Loaded', className: 'badge badge-success badge-sm' };
+  };
 
   const getCurrentContent = () => {
     switch (activeTab) {
@@ -17,6 +32,7 @@ const Context: React.FC = () => {
       case 'workflow': return contextData.workflowMethod;
       case 'skills': return contextData.skillsKnowledge;
       case 'discovery': return contextData.discoveryQuestions;
+      default: return '';
     }
   };
 
@@ -87,7 +103,30 @@ const Context: React.FC = () => {
     <div className="max-w-6xl mx-auto p-4">
       <ErrorDisplay error={error} onClose={clearError} />
       <h1 className="text-2xl font-bold mb-4">Context Management</h1>
-      
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
+        {contextStatusCards.map(card => {
+          const badge = getStatusBadge(card.status);
+          const lastUpdated = card.status?.lastUpdated
+            ? new Date(card.status.lastUpdated).toLocaleTimeString()
+            : 'Not loaded yet';
+          return (
+            <div key={card.id} className="card bg-base-200 shadow-sm">
+              <div className="card-body py-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="font-semibold text-sm">{card.label}</h3>
+                    <p className="text-xs text-base-content/60 break-all">{card.status?.path}</p>
+                  </div>
+                  <span className={badge.className}>{badge.text}</span>
+                </div>
+                <p className="text-xs text-base-content/50 mt-2">Last update: {lastUpdated}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
       {/* Tab Navigation */}
       <div className="tabs tabs-boxed mb-6">
         {tabs.map((tab) => (

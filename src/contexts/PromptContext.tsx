@@ -1,4 +1,12 @@
-import React, { createContext, useState, useContext, ReactNode, useEffect } from 'react';
+import React, { createContext, useState, useContext, ReactNode, useEffect, useCallback } from 'react';
+
+interface FileStatus {
+  exists: boolean;
+  hasContent: boolean;
+  path: string;
+  lastUpdated: number;
+  error?: string;
+}
 
 interface PromptConfig {
   behaviorRules: string;
@@ -21,6 +29,8 @@ interface ContextData {
 interface PromptContextType {
   promptConfig: PromptConfig;
   contextData: ContextData;
+  contextStatus: Record<'resume' | 'jobPost' | 'discoveryQuestions' | 'skillsKnowledge' | 'workflowMethod', FileStatus>;
+  promptStatus: Record<'behaviorRules' | 'languageGuide' | 'responseStyle', FileStatus>;
   updatePromptConfig: (config: Partial<PromptConfig>) => void;
   updateContextData: (data: Partial<ContextData>) => void;
   buildSystemMessage: () => string;
@@ -189,6 +199,20 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     workflowMethod: '',
   });
 
+  const [contextStatus, setContextStatus] = useState<Record<'resume' | 'jobPost' | 'discoveryQuestions' | 'skillsKnowledge' | 'workflowMethod', FileStatus>>({
+    resume: { exists: false, hasContent: false, path: 'context/resume.md', lastUpdated: 0 },
+    jobPost: { exists: false, hasContent: false, path: 'context/current_job.md', lastUpdated: 0 },
+    discoveryQuestions: { exists: false, hasContent: false, path: 'context/discovery_questions.md', lastUpdated: 0 },
+    skillsKnowledge: { exists: false, hasContent: false, path: 'context/skills_knowledge.md', lastUpdated: 0 },
+    workflowMethod: { exists: false, hasContent: false, path: 'context/workflow_method.md', lastUpdated: 0 },
+  });
+
+  const [promptStatus, setPromptStatus] = useState<Record<'behaviorRules' | 'languageGuide' | 'responseStyle', FileStatus>>({
+    behaviorRules: { exists: false, hasContent: false, path: 'prompts/behavior_rules.md', lastUpdated: 0 },
+    languageGuide: { exists: false, hasContent: false, path: 'prompts/language_guide.md', lastUpdated: 0 },
+    responseStyle: { exists: false, hasContent: false, path: 'prompts/response_style.md', lastUpdated: 0 },
+  });
+
   const updatePromptConfig = (config: Partial<PromptConfig>) => {
     setPromptConfig(prev => ({ ...prev, ...config }));
   };
@@ -225,6 +249,12 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       parts.push('=== YOUR DEVELOPMENT METHODOLOGY ===');
       parts.push(contextData.workflowMethod);
     }
+
+    if (contextData.discoveryQuestions) {
+      parts.push('=== DISCOVERY QUESTIONS TO ASK WHEN INFORMATION IS MISSING ===');
+      parts.push(contextData.discoveryQuestions);
+      parts.push('Use the discovery questions above naturally. After each answer, check if the interviewer already shared the needed details. If not, ask the next most relevant question—never skip critical gaps.');
+    }
     
     if (promptConfig.behaviorEnabled) {
       parts.push('=== BEHAVIOR RULES (MANDATORY) ===');
@@ -243,47 +273,92 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
     // Add strong closing instruction
     parts.push('=== FINAL INSTRUCTION ===');
-    parts.push('REMEMBER: Base ALL answers on the candidate profile above. Reference specific projects, skills, and experience from the resume. Align responses with job post requirements. You MUST respond as a Filipino developer using Barok English style, first-person perspective, and the 3-part structure (Summary → Explanation → Closing). This is NOT negotiable.');
+    parts.push('REMEMBER: Base ALL answers on the candidate profile above. Reference specific projects, skills, and experience from the resume. Align responses with job post requirements. You MUST respond as a Filipino developer using Barok English style, first-person perspective, and the required 3-step structure (Direct Answer → Quick Context → Punchy Close) in four sentences or less. Always decide whether to ask a discovery question based on missing details in the conversation. This is NOT negotiable.');
 
     return parts.join('\n\n');
   };
 
-  const loadPromptsFromFiles = async (): Promise<void> => {
+  const loadPromptsFromFiles = useCallback(async (): Promise<void> => {
     try {
       // Use IPC handler to load prompt files from file system
       const promptFiles = await window.electronAPI.loadPromptFiles();
-      setPromptConfig(prev => ({
-        ...prev,
-        behaviorRules: promptFiles.behaviorRules || prev.behaviorRules,
-        languageGuide: promptFiles.languageGuide || prev.languageGuide,
-        responseStyle: promptFiles.responseStyle || prev.responseStyle
-      }));
+      if (promptFiles?.data) {
+        setPromptConfig(prev => ({
+          ...prev,
+          behaviorRules: promptFiles.data.behaviorRules || prev.behaviorRules,
+          languageGuide: promptFiles.data.languageGuide || prev.languageGuide,
+          responseStyle: promptFiles.data.responseStyle || prev.responseStyle
+        }));
+      }
+      if (promptFiles?.status) {
+        setPromptStatus(promptFiles.status);
+      }
     } catch (error) {
       console.warn('Could not load prompt files, using defaults:', error);
     }
-  };
+  }, []);
 
-  const loadContextFromFiles = async (): Promise<void> => {
+  const loadContextFromFiles = useCallback(async (): Promise<void> => {
     try {
       // Use IPC handler to load context files from file system
       const contextFiles = await window.electronAPI.loadContextFiles();
-      setContextData(prev => ({
-        ...prev,
-        resume: contextFiles.resume || prev.resume,
-        jobPost: contextFiles.jobPost || prev.jobPost,
-        discoveryQuestions: contextFiles.discoveryQuestions || prev.discoveryQuestions,
-        skillsKnowledge: contextFiles.skillsKnowledge || prev.skillsKnowledge,
-        workflowMethod: contextFiles.workflowMethod || prev.workflowMethod
-      }));
+      if (contextFiles?.data) {
+        setContextData({
+          resume: contextFiles.data.resume || '',
+          jobPost: contextFiles.data.jobPost || '',
+          discoveryQuestions: contextFiles.data.discoveryQuestions || '',
+          skillsKnowledge: contextFiles.data.skillsKnowledge || '',
+          workflowMethod: contextFiles.data.workflowMethod || '',
+        });
+      }
+      if (contextFiles?.status) {
+        setContextStatus(contextFiles.status);
+      }
     } catch (error) {
       console.warn('Could not load context files, using defaults:', error);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadPromptsFromFiles();
     loadContextFromFiles();
-  }, []);
+  }, [loadPromptsFromFiles, loadContextFromFiles]);
+
+  useEffect(() => {
+    const unsubscribeContext = window.electronAPI.onContextFilesUpdated((payload) => {
+      if (payload?.data) {
+        setContextData({
+          resume: payload.data.resume || '',
+          jobPost: payload.data.jobPost || '',
+          discoveryQuestions: payload.data.discoveryQuestions || '',
+          skillsKnowledge: payload.data.skillsKnowledge || '',
+          workflowMethod: payload.data.workflowMethod || '',
+        });
+      }
+      if (payload?.status) {
+        setContextStatus(payload.status);
+      }
+    });
+
+    const unsubscribePrompt = window.electronAPI.onPromptFilesUpdated((payload) => {
+      if (payload?.data) {
+        setPromptConfig(prev => ({
+          ...prev,
+          behaviorRules: payload.data.behaviorRules || prev.behaviorRules,
+          languageGuide: payload.data.languageGuide || prev.languageGuide,
+          responseStyle: payload.data.responseStyle || prev.responseStyle,
+        }));
+      }
+      if (payload?.status) {
+        setPromptStatus(payload.status);
+      }
+    });
+
+    return () => {
+      unsubscribeContext?.();
+      unsubscribePrompt?.();
+    };
+  }, [loadContextFromFiles, loadPromptsFromFiles]);
 
   // Save prompt config and context data to electron-store when they change
   useEffect(() => {
@@ -312,6 +387,8 @@ export const PromptProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       value={{
         promptConfig,
         contextData,
+        contextStatus,
+        promptStatus,
         updatePromptConfig,
         updateContextData,
         buildSystemMessage,

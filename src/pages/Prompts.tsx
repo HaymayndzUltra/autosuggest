@@ -1,13 +1,26 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { usePrompt } from '../contexts/PromptContext';
 import { useError } from '../contexts/ErrorContext';
 import ErrorDisplay from '../components/ErrorDisplay';
 
 const Prompts: React.FC = () => {
-  const { promptConfig, updatePromptConfig, loadPromptsFromFiles } = usePrompt();
+  const { promptConfig, promptStatus, updatePromptConfig, loadPromptsFromFiles } = usePrompt();
   const { error, setError, clearError } = useError();
   const [editingPrompt, setEditingPrompt] = useState<'behavior' | 'language' | 'response' | null>(null);
   const [tempContent, setTempContent] = useState('');
+
+  const promptStatusCards = useMemo(() => ([
+    { id: 'behavior', label: 'Behavior Rules', status: promptStatus.behaviorRules },
+    { id: 'language', label: 'Language Guide', status: promptStatus.languageGuide },
+    { id: 'response', label: 'Response Style', status: promptStatus.responseStyle },
+  ] as const), [promptStatus]);
+
+  const getStatusBadge = (status: typeof promptStatus.behaviorRules) => {
+    if (!status?.exists) return { text: 'Missing file', className: 'badge badge-error badge-sm' };
+    if (!status.hasContent) return { text: 'Loaded (empty)', className: 'badge badge-warning badge-sm' };
+    if (status.error) return { text: 'Error', className: 'badge badge-error badge-sm' };
+    return { text: 'Loaded', className: 'badge badge-success badge-sm' };
+  };
 
   const handleEditPrompt = (type: 'behavior' | 'language' | 'response') => {
     setEditingPrompt(type);
@@ -80,7 +93,30 @@ const Prompts: React.FC = () => {
     <div className="max-w-6xl mx-auto p-4">
       <ErrorDisplay error={error} onClose={clearError} />
       <h1 className="text-2xl font-bold mb-4">System Prompts Management</h1>
-      
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+        {promptStatusCards.map(card => {
+          const badge = getStatusBadge(card.status);
+          const lastUpdated = card.status?.lastUpdated
+            ? new Date(card.status.lastUpdated).toLocaleTimeString()
+            : 'Not loaded yet';
+          return (
+            <div key={card.id} className="card bg-base-200 shadow-sm">
+              <div className="card-body py-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="font-semibold text-sm">{card.label}</h3>
+                    <p className="text-xs text-base-content/60 break-all">{card.status?.path}</p>
+                  </div>
+                  <span className={badge.className}>{badge.text}</span>
+                </div>
+                <p className="text-xs text-base-content/50 mt-2">Last update: {lastUpdated}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
       <div className="mb-6">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-lg font-semibold">Current Configuration</h2>

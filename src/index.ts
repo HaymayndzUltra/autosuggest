@@ -14,7 +14,7 @@ import Prism from "prismjs";
 import OpenAI from "openai";
 import axios from "axios";
 import FormData from "form-data";
-import fs from "fs";
+import fs, { FSWatcher } from "fs";
 import path from "path";
 import { Buffer } from "buffer";
 import { createClient, LiveTranscriptionEvents } from "@deepgram/sdk";
@@ -26,8 +26,252 @@ if (electronSquirrelStartup) {
   app.quit();
 }
 
+type ContextFileKey =
+  | "resume"
+  | "jobPost"
+  | "discoveryQuestions"
+  | "skillsKnowledge"
+  | "workflowMethod";
+
+type PromptFileKey = "behaviorRules" | "languageGuide" | "responseStyle";
+
+interface WatchedFileStatus {
+  exists: boolean;
+  hasContent: boolean;
+  path: string;
+  lastUpdated: number;
+  error?: string;
+}
+
+interface ContextFileResult {
+  data: Record<ContextFileKey, string>;
+  status: Record<ContextFileKey, WatchedFileStatus>;
+}
+
+interface PromptFileResult {
+  data: Record<PromptFileKey, string>;
+  status: Record<PromptFileKey, WatchedFileStatus>;
+}
+
+const CONTEXT_FILE_MAPPINGS: { key: ContextFileKey; filename: string }[] = [
+  { key: "resume", filename: "resume.md" },
+  { key: "jobPost", filename: "current_job.md" },
+  { key: "discoveryQuestions", filename: "discovery_questions.md" },
+  { key: "skillsKnowledge", filename: "skills_knowledge.md" },
+  { key: "workflowMethod", filename: "workflow_method.md" },
+];
+
+const PROMPT_FILE_MAPPINGS: { key: PromptFileKey; filename: string }[] = [
+  { key: "behaviorRules", filename: "behavior_rules.md" },
+  { key: "languageGuide", filename: "language_guide.md" },
+  { key: "responseStyle", filename: "response_style.md" },
+];
+
+let mainWindow: BrowserWindow | null = null;
+let contextWatcher: FSWatcher | null = null;
+let promptWatcher: FSWatcher | null = null;
+
+const readContextFiles = (): ContextFileResult => {
+  const contextDir = path.join(__dirname, "..", "context");
+  const data: Record<ContextFileKey, string> = {
+    resume: "",
+    jobPost: "",
+    discoveryQuestions: "",
+    skillsKnowledge: "",
+    workflowMethod: "",
+  };
+  const status = CONTEXT_FILE_MAPPINGS.reduce<Record<ContextFileKey, WatchedFileStatus>>(
+    (acc, mapping) => {
+      const filePath = path.join(contextDir, mapping.filename);
+      const baseStatus: WatchedFileStatus = {
+        exists: false,
+        hasContent: false,
+        path: filePath,
+        lastUpdated: Date.now(),
+      };
+
+      if (fs.existsSync(filePath)) {
+        try {
+          const content = fs.readFileSync(filePath, "utf8");
+          data[mapping.key] = content;
+          acc[mapping.key] = {
+            ...baseStatus,
+            exists: true,
+            hasContent: content.trim().length > 0,
+          };
+        } catch (error) {
+          acc[mapping.key] = {
+            ...baseStatus,
+            exists: true,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      } else {
+        acc[mapping.key] = {
+          ...baseStatus,
+          error: "File not found",
+        };
+      }
+
+      return acc;
+    },
+    {
+      resume: {
+        exists: false,
+        hasContent: false,
+        path: path.join(contextDir, "resume.md"),
+        lastUpdated: Date.now(),
+      },
+      jobPost: {
+        exists: false,
+        hasContent: false,
+        path: path.join(contextDir, "current_job.md"),
+        lastUpdated: Date.now(),
+      },
+      discoveryQuestions: {
+        exists: false,
+        hasContent: false,
+        path: path.join(contextDir, "discovery_questions.md"),
+        lastUpdated: Date.now(),
+      },
+      skillsKnowledge: {
+        exists: false,
+        hasContent: false,
+        path: path.join(contextDir, "skills_knowledge.md"),
+        lastUpdated: Date.now(),
+      },
+      workflowMethod: {
+        exists: false,
+        hasContent: false,
+        path: path.join(contextDir, "workflow_method.md"),
+        lastUpdated: Date.now(),
+      },
+    }
+  );
+
+  return { data, status };
+};
+
+const readPromptFiles = (): PromptFileResult => {
+  const promptsDir = path.join(__dirname, "..", "prompts");
+  const data: Record<PromptFileKey, string> = {
+    behaviorRules: "",
+    languageGuide: "",
+    responseStyle: "",
+  };
+
+  const status = PROMPT_FILE_MAPPINGS.reduce<Record<PromptFileKey, WatchedFileStatus>>(
+    (acc, mapping) => {
+      const filePath = path.join(promptsDir, mapping.filename);
+      const baseStatus: WatchedFileStatus = {
+        exists: false,
+        hasContent: false,
+        path: filePath,
+        lastUpdated: Date.now(),
+      };
+
+      if (fs.existsSync(filePath)) {
+        try {
+          const content = fs.readFileSync(filePath, "utf8");
+          data[mapping.key] = content;
+          acc[mapping.key] = {
+            ...baseStatus,
+            exists: true,
+            hasContent: content.trim().length > 0,
+          };
+        } catch (error) {
+          acc[mapping.key] = {
+            ...baseStatus,
+            exists: true,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      } else {
+        acc[mapping.key] = {
+          ...baseStatus,
+          error: "File not found",
+        };
+      }
+
+      return acc;
+    },
+    {
+      behaviorRules: {
+        exists: false,
+        hasContent: false,
+        path: path.join(promptsDir, "behavior_rules.md"),
+        lastUpdated: Date.now(),
+      },
+      languageGuide: {
+        exists: false,
+        hasContent: false,
+        path: path.join(promptsDir, "language_guide.md"),
+        lastUpdated: Date.now(),
+      },
+      responseStyle: {
+        exists: false,
+        hasContent: false,
+        path: path.join(promptsDir, "response_style.md"),
+        lastUpdated: Date.now(),
+      },
+    }
+  );
+
+  return { data, status };
+};
+
+const notifyContextUpdate = (): ContextFileResult => {
+  const result = readContextFiles();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("context-files-updated", result);
+  }
+  return result;
+};
+
+const notifyPromptUpdate = (): PromptFileResult => {
+  const result = readPromptFiles();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("prompt-files-updated", result);
+  }
+  return result;
+};
+
+const setupFileWatchers = () => {
+  const contextDir = path.join(__dirname, "..", "context");
+  const promptsDir = path.join(__dirname, "..", "prompts");
+
+  if (contextWatcher) {
+    contextWatcher.close();
+  }
+  if (promptWatcher) {
+    promptWatcher.close();
+  }
+
+  if (fs.existsSync(contextDir)) {
+    contextWatcher = fs.watch(contextDir, (eventType, filename) => {
+      if (!filename || !filename.endsWith(".md")) {
+        return;
+      }
+      notifyContextUpdate();
+    });
+  } else {
+    notifyContextUpdate();
+  }
+
+  if (fs.existsSync(promptsDir)) {
+    promptWatcher = fs.watch(promptsDir, (eventType, filename) => {
+      if (!filename || !filename.endsWith(".md")) {
+        return;
+      }
+      notifyPromptUpdate();
+    });
+  } else {
+    notifyPromptUpdate();
+  }
+};
+
 const createWindow = (): void => {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     height: 1000,
     width: 1300,
     webPreferences: {
@@ -65,9 +309,17 @@ const createWindow = (): void => {
 //  mainWindow.webContents.openDevTools();
 
   mainWindow.webContents.on("did-finish-load", () => {
-    mainWindow.webContents.executeJavaScript(`
+    mainWindow?.webContents.executeJavaScript(`
       console.log('Applied CSP:', document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content'));
     `);
+    notifyContextUpdate();
+    notifyPromptUpdate();
+  });
+
+  setupFileWatchers();
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
   });
 };
 
@@ -495,74 +747,18 @@ ipcMain.handle("stop-deepgram", () => {
 // IPC handlers for loading context and prompt files
 ipcMain.handle("load-context-files", async () => {
   try {
-    const contextDir = path.join(__dirname, '..', 'context');
-    const files = {
-      resume: '',
-      jobPost: '',
-      discoveryQuestions: '',
-      skillsKnowledge: '',
-      workflowMethod: ''
-    };
-
-    // Read each context file
-    const fileMappings = [
-      { key: 'resume', filename: 'resume.md' },
-      { key: 'jobPost', filename: 'current_job.md' },
-      { key: 'discoveryQuestions', filename: 'discovery_questions.md' },
-      { key: 'skillsKnowledge', filename: 'skills_knowledge.md' },
-      { key: 'workflowMethod', filename: 'workflow_method.md' }
-    ];
-
-    for (const mapping of fileMappings) {
-      const filePath = path.join(contextDir, mapping.filename);
-      if (fs.existsSync(filePath)) {
-        files[mapping.key] = fs.readFileSync(filePath, 'utf8');
-      }
-    }
-
-    return files;
+    return readContextFiles();
   } catch (error) {
-    console.error('Failed to load context files:', error);
-    return {
-      resume: '',
-      jobPost: '',
-      discoveryQuestions: '',
-      skillsKnowledge: '',
-      workflowMethod: ''
-    };
+    console.error("Failed to load context files:", error);
+    return notifyContextUpdate();
   }
 });
 
 ipcMain.handle("load-prompt-files", async () => {
   try {
-    const promptsDir = path.join(__dirname, '..', 'prompts');
-    const files = {
-      behaviorRules: '',
-      languageGuide: '',
-      responseStyle: ''
-    };
-
-    // Read each prompt file
-    const fileMappings = [
-      { key: 'behaviorRules', filename: 'behavior_rules.md' },
-      { key: 'languageGuide', filename: 'language_guide.md' },
-      { key: 'responseStyle', filename: 'response_style.md' }
-    ];
-
-    for (const mapping of fileMappings) {
-      const filePath = path.join(promptsDir, mapping.filename);
-      if (fs.existsSync(filePath)) {
-        files[mapping.key] = fs.readFileSync(filePath, 'utf8');
-      }
-    }
-
-    return files;
+    return readPromptFiles();
   } catch (error) {
-    console.error('Failed to load prompt files:', error);
-    return {
-      behaviorRules: '',
-      languageGuide: '',
-      responseStyle: ''
-    };
+    console.error("Failed to load prompt files:", error);
+    return notifyPromptUpdate();
   }
 });
