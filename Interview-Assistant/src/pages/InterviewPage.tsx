@@ -14,12 +14,10 @@ import ErrorDisplay from "../components/ErrorDisplay";
 import { useError } from "../contexts/ErrorContext";
 import { useInterview } from "../contexts/InterviewContext";
 import ReactMarkdown from 'react-markdown';
-import { suggestionEngine } from '../utils/reasoningEngine';
-import { ASRProviderController } from '../utils/providerController';
 
 const InterviewPage: React.FC = () => {
   const { knowledgeBase, conversations, addConversation, clearConversations } = useKnowledgeBase();
-  const { promptConfig, buildSystemMessage, contextData } = usePrompt();
+  const { promptConfig, buildSystemMessage } = usePrompt();
   const { error, setError, clearError } = useError();
   const {
     currentText,
@@ -29,13 +27,7 @@ const InterviewPage: React.FC = () => {
     displayedAiResult,
     setDisplayedAiResult,
     lastProcessedIndex,
-    setLastProcessedIndex,
-    liveSuggestion,
-    setLiveSuggestion,
-    suggestionHistory,
-    setSuggestionHistory,
-    lastTranscriptChunk,
-    setLastTranscriptChunk
+    setLastProcessedIndex
   } = useInterview();
   const [isRecording, setIsRecording] = useState(false);
   const [isConfigured, setIsConfigured] = useState(false);
@@ -45,9 +37,6 @@ const InterviewPage: React.FC = () => {
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
   const [processor, setProcessor] = useState<ScriptProcessorNode | null>(null);
   const [autoSubmitTimer, setAutoSubmitTimer] = useState<NodeJS.Timeout | null>(null);
-  const [activeASRProvider, setActiveASRProvider] = useState<'local' | 'deepgram' | null>(null);
-  const [asrHealthStatus, setAsrHealthStatus] = useState<{ local: any, deepgram: any } | null>(null);
-  const [showHelperModal, setShowHelperModal] = useState(false);
   const aiResponseRef = useRef<HTMLDivElement>(null);
 
   const markdownStyles = `
@@ -95,7 +84,7 @@ const InterviewPage: React.FC = () => {
       const config = await window.electronAPI.getConfig();
       
       // Build messages array with system prompts if enabled
-      const messages: any[] = [];
+      const messages = [];
       
       // DEBUG: Log prompt configuration
       console.log('🔧 PROMPT DEBUG INFO:');
@@ -152,46 +141,6 @@ const InterviewPage: React.FC = () => {
     }
   };
 
-  const handleSuggestionGeneration = async (newContent: string) => {
-    try {
-      // Use rolling buffer approach - get last 50 words for context
-      const words = newContent.split(' ');
-      const bufferSize = 50;
-      const bufferedContent = words.slice(-bufferSize).join(' ');
-      
-      let currentSuggestion = '';
-      
-      await suggestionEngine.processTranscriptStream(
-        bufferedContent,
-        promptConfig,
-        contextData,
-        (chunk: string) => {
-          // Stream chunks to live suggestion
-          currentSuggestion += chunk;
-          setLiveSuggestion(currentSuggestion);
-        },
-        (intent: string, isDuplicate: boolean) => {
-          if (!isDuplicate && currentSuggestion.trim()) {
-            setLastTranscriptChunk(bufferedContent);
-            setSuggestionHistory(prev => {
-              const updated = [...prev, currentSuggestion];
-              return updated.slice(-5); // Keep only last 5
-            });
-            // CRITICAL: Update lastProcessedIndex to prevent re-processing same transcript
-            setLastProcessedIndex(currentText.length);
-            console.log('💡 New streaming suggestion:', currentSuggestion);
-            console.log('🎯 Detected intent:', intent);
-            console.log('📝 Based on transcript:', bufferedContent.slice(-100));
-          } else if (isDuplicate) {
-            console.log('🚫 Duplicate suggestion prevented');
-          }
-        }
-      );
-    } catch (error) {
-      console.error('Error generating streaming suggestion:', error);
-    }
-  };
-
   const handleAskGPTStable = useCallback(async (newContent: string) => {
     handleAskGPT(newContent);
   }, [handleAskGPT]);
@@ -206,7 +155,7 @@ const InterviewPage: React.FC = () => {
           const newTranscript = data.transcript.trim();
           if (!prev.endsWith(newTranscript)) {
             lastTranscriptTime = Date.now();
-            const updatedText = prev + (prev ? ' ' : '') + newTranscript;
+            const updatedText = prev + (prev ? '\n' : '') + newTranscript;
             
             if (isAutoGPTEnabled) {
               if (autoSubmitTimer) {
@@ -215,10 +164,9 @@ const InterviewPage: React.FC = () => {
               const newTimer = setTimeout(() => {
                 const newContent = updatedText.slice(lastProcessedIndex);
                 if (newContent.trim()) {
-                  // Use suggestion generation instead of full GPT call
-                  handleSuggestionGeneration(newContent);
+                  handleAskGPTStable(newContent);
                 }
-              }, 500); // Reduced to 500ms for faster streaming response
+              }, 2000);
               setAutoSubmitTimer(newTimer);
             }
             
@@ -226,21 +174,14 @@ const InterviewPage: React.FC = () => {
           }
           return prev;
         });
-      } else if (data.transcript && !data.is_final) {
-        // Handle interim results for real-time feedback
-        const interimText = data.transcript.trim();
-        if (interimText) {
-          // Show interim text in a temporary way (optional enhancement)
-          console.log('Interim transcript:', interimText);
-        }
       }
     };
 
     const checkAndSubmit = () => {
-      if (isAutoGPTEnabled && Date.now() - lastTranscriptTime >= 500) { // Reduced to 500ms for streaming
+      if (isAutoGPTEnabled && Date.now() - lastTranscriptTime >= 2000) {
         const newContent = currentText.slice(lastProcessedIndex);
         if (newContent.trim()) {
-          handleSuggestionGeneration(newContent);
+          handleAskGPTStable(newContent);
         }
       }
       checkTimer = setTimeout(checkAndSubmit, 1000);
@@ -255,32 +196,16 @@ const InterviewPage: React.FC = () => {
         clearTimeout(checkTimer);
       }
     };
-  }, [isAutoGPTEnabled, lastProcessedIndex, currentText, handleSuggestionGeneration, setCurrentText, setLastProcessedIndex]);
+  }, [isAutoGPTEnabled, lastProcessedIndex, currentText, handleAskGPTStable, setCurrentText, setLastProcessedIndex]);
 
   const loadConfig = async () => {
     try {
       const config = await window.electronAPI.getConfig();
-      
-      // Check ASR health
-      const healthStatus = await window.electronAPI.checkASRHealth(config);
-      setAsrHealthStatus(healthStatus);
-      
-      // Determine if we can start recording
-      const hasDeepgramKey = !!(config.deepgram_api_key && config.deepgram_api_key.trim());
-      const asrMode = config.asr_provider || 'auto';
-      
-      const canStart = ASRProviderController.shouldEnableStart(
-        asrMode,
-        healthStatus.local,
-        hasDeepgramKey
-      );
-      
-      setIsConfigured(canStart);
-      
-      if (!canStart) {
-        setShowHelperModal(true);
+      if (config && config.openai_key && config.deepgram_api_key) {
+        setIsConfigured(true);
+      } else {
+        setError("OpenAI API key or Deepgram API key not configured. Please check settings.");
       }
-      
     } catch (err) {
       setError("Failed to load configuration. Please check settings.");
     }
@@ -288,76 +213,31 @@ const InterviewPage: React.FC = () => {
 
   const startRecording = async () => {
     try {
-      const config = await window.electronAPI.getConfig();
-      
-      // Get fresh health status
-      const healthStatus = await window.electronAPI.checkASRHealth(config);
-      setAsrHealthStatus(healthStatus);
-      
-      const hasDeepgramKey = !!(config.deepgram_api_key && config.deepgram_api_key.trim());
-      const asrMode = config.asr_provider || 'auto';
-      
-      // Select provider
-      const selectedProvider = ASRProviderController.selectProvider(
-        asrMode,
-        healthStatus.local,
-        hasDeepgramKey
-      );
-      
-      if (!selectedProvider) {
-        setShowHelperModal(true);
-        return;
-      }
-      
-      setActiveASRProvider(selectedProvider);
-      
-      // Start audio capture
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: false,
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
           sampleRate: 16000,
         },
       });
       setUserMedia(stream);
 
-      // Start the selected ASR provider
-      const result = await window.electronAPI.startASR(config);
-      
+      const config = await window.electronAPI.getConfig();
+      const result = await window.electronAPI.ipcRenderer.invoke('start-deepgram', {
+        deepgram_key: config.deepgram_api_key
+      });
       if (!result.success) {
         throw new Error(result.error);
       }
 
-      // Set up audio processing
       const context = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
       setAudioContext(context);
       const source = context.createMediaStreamSource(stream);
-      
-      // Create audio processing chain for noise reduction and enhancement
-      const compressor = context.createDynamicsCompressor();
-      compressor.threshold.value = -24;
-      compressor.knee.value = 30;
-      compressor.ratio.value = 12;
-      compressor.attack.value = 0.003;
-      compressor.release.value = 0.25;
-      
-      const highPassFilter = context.createBiquadFilter();
-      highPassFilter.type = 'highpass';
-      highPassFilter.frequency.value = 80; // Remove low-frequency noise
-      
-      const gainNode = context.createGain();
-      gainNode.gain.value = 1.2; // Slight volume boost
-      
       const processor = context.createScriptProcessor(4096, 1, 1);
       setProcessor(processor);
 
-      // Connect audio chain: source -> compressor -> filter -> gain -> processor -> destination
-      source.connect(compressor);
-      compressor.connect(highPassFilter);
-      highPassFilter.connect(gainNode);
-      gainNode.connect(processor);
+      source.connect(processor);
       processor.connect(context.destination);
 
       processor.onaudioprocess = (e: { inputBuffer: { getChannelData: (arg0: number) => any; }; }) => {
@@ -385,71 +265,27 @@ const InterviewPage: React.FC = () => {
     if (processor) {
       processor.disconnect();
     }
-    window.electronAPI.stopASR();
+    window.electronAPI.ipcRenderer.invoke('stop-deepgram');
     setIsRecording(false);
     setUserMedia(null);
     setAudioContext(null);
     setProcessor(null);
-    setActiveASRProvider(null);
   };
 
   useEffect(() => {
     loadConfig();
-    
-    // Listen for ASR provider changes
-    const handleProviderChange = (_event: any, data: any) => {
-      console.log('🔄 ASR Provider changed:', data);
-      setActiveASRProvider(data.to);
-      
-      // Show toast notification
-      if (data.from && data.to) {
-        const message = `Switched to ${ASRProviderController.getProviderLabel(data.to)} (${data.reason})`;
-        // You could implement a toast notification here
-        console.log('📢 Toast:', message);
-      }
-    };
-    
-    window.electronAPI.ipcRenderer.on('asr-provider-changed', handleProviderChange);
-    
     return () => {
-      window.electronAPI.ipcRenderer.removeListener('asr-provider-changed', handleProviderChange);
       if (isRecording) {
         stopRecording();
       }
     };
-  }, [isRecording]);
-
+  }, []);
 
   useEffect(() => {
     if (aiResponseRef.current) {
       aiResponseRef.current.scrollTop = aiResponseRef.current.scrollHeight;
     }
   }, [displayedAiResult]);
-
-  const retestConnectivity = async () => {
-    try {
-      const config = await window.electronAPI.getConfig();
-      const healthStatus = await window.electronAPI.checkASRHealth(config);
-      setAsrHealthStatus(healthStatus);
-      
-      const hasDeepgramKey = !!(config.deepgram_api_key && config.deepgram_api_key.trim());
-      const asrMode = config.asr_provider || 'auto';
-      
-      const canStart = ASRProviderController.shouldEnableStart(
-        asrMode,
-        healthStatus.local,
-        hasDeepgramKey
-      );
-      
-      setIsConfigured(canStart);
-      
-      if (canStart) {
-        setShowHelperModal(false);
-      }
-    } catch (error) {
-      console.error('Failed to retest connectivity:', error);
-    }
-  };
 
   const debounce = (func: Function, delay: number) => {
     let timeoutId: NodeJS.Timeout;
@@ -463,8 +299,6 @@ const InterviewPage: React.FC = () => {
     <div className="flex flex-col h-[calc(100vh-2.5rem)] p-2 space-y-2">
       <style>{markdownStyles}</style>
       <ErrorDisplay error={error} onClose={clearError} />
-      
-      
       <div className="flex justify-center items-center space-x-2">
         <button
           onClick={isRecording ? stopRecording : startRecording}
@@ -483,13 +317,6 @@ const InterviewPage: React.FC = () => {
           />
           <span>Auto GPT</span>
         </label>
-        
-        {/* ASR Provider Pill */}
-        {activeASRProvider && (
-          <div className="badge badge-info badge-sm">
-            ASR: {ASRProviderController.getProviderLabel(activeASRProvider)}
-          </div>
-        )}
         
         {/* System Prompts Status Indicator */}
         <div className={`badge ${promptConfig.enabled ? 'badge-success' : 'badge-error'} badge-sm`}>
@@ -516,46 +343,7 @@ const InterviewPage: React.FC = () => {
             ref={aiResponseRef}
             className="flex-1 overflow-auto bg-base-100 p-2 rounded mb-1 min-h-[80px]"
           >
-            <h2 className="text-lg font-bold mb-2">
-              {isAutoGPTEnabled ? "Live Suggestions & Manual Q&A:" : "AI Response:"}
-            </h2>
-            
-            {/* Live Suggestion - shown at top when Auto GPT is enabled */}
-            {isAutoGPTEnabled && liveSuggestion && (
-              <div className="mb-4 p-3 bg-gradient-to-r from-accent/20 to-primary/20 border-l-4 border-accent rounded-r-lg">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-bold text-accent uppercase">💡 Live Suggestion</span>
-                  <div className="flex items-center space-x-2">
-                    {/* Streaming indicator */}
-                    <div className="flex space-x-1">
-                      <div className="w-1 h-1 bg-accent rounded-full animate-pulse"></div>
-                      <div className="w-1 h-1 bg-accent rounded-full animate-pulse" style={{animationDelay: '0.2s'}}></div>
-                      <div className="w-1 h-1 bg-accent rounded-full animate-pulse" style={{animationDelay: '0.4s'}}></div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setLiveSuggestion("");
-                        setLastTranscriptChunk("");
-                      }}
-                      className="btn btn-ghost btn-xs"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-                <div className="text-base font-medium text-base-content mt-2 leading-relaxed">
-                  {liveSuggestion}
-                  {/* Typing cursor */}
-                  <span className="animate-pulse">|</span>
-                </div>
-                {lastTranscriptChunk && (
-                  <div className="text-xs text-base-content/60 mt-3 p-2 bg-base-100/50 rounded border-t border-accent/30">
-                    <span className="font-semibold">📝 Client said:</span>
-                    <div className="mt-1 italic">"{lastTranscriptChunk}"</div>
-                  </div>
-                )}
-              </div>
-            )}
+            <h2 className="text-lg font-bold mb-2">AI Response:</h2>
             
             {/* Display Q&A pairs from conversation history */}
             {conversations.length > 0 ? (
@@ -592,10 +380,7 @@ const InterviewPage: React.FC = () => {
               </div>
             ) : (
               <div className="text-base-content/60 italic">
-                {isAutoGPTEnabled 
-                  ? "Live suggestions will appear above in real-time. Manual Q&A responses will show here when you click 'Ask GPT'."
-                  : "No responses yet. Start recording and ask questions!"
-                }
+                No responses yet. Start recording and ask questions!
               </div>
             )}
           </div>
@@ -630,62 +415,6 @@ const InterviewPage: React.FC = () => {
           )}
         </div>
       </div>
-      
-      {/* ASR Helper Modal */}
-      {showHelperModal && (
-        <div className="modal modal-open">
-          <div className="modal-box">
-            <h3 className="font-bold text-lg mb-4">ASR Service Unavailable</h3>
-            
-            <div className="space-y-4">
-              <div>
-                <h4 className="font-semibold mb-2">Current Status:</h4>
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    <div className={`w-3 h-3 rounded-full ${asrHealthStatus?.local?.healthy ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                    <span>Local ASR: {asrHealthStatus?.local?.healthy ? 'Healthy' : 'Unavailable'}</span>
-                    {asrHealthStatus?.local?.error && (
-                      <span className="text-sm text-gray-500">({asrHealthStatus.local.error})</span>
-                    )}
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <div className={`w-3 h-3 rounded-full ${asrHealthStatus?.deepgram?.healthy ? 'bg-green-500' : 'bg-red-500'}`}></div>
-                    <span>Deepgram: {asrHealthStatus?.deepgram?.healthy ? 'Ready' : 'No API Key'}</span>
-                    {asrHealthStatus?.deepgram?.error && (
-                      <span className="text-sm text-gray-500">({asrHealthStatus.deepgram.error})</span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              
-              <div>
-                <h4 className="font-semibold mb-2">How to start Local ASR:</h4>
-                <ol className="list-decimal list-inside space-y-1 text-sm">
-                  <li>Install a local ASR service (e.g., Whisper server)</li>
-                  <li>Start the service on port 9001 (default)</li>
-                  <li>Ensure it responds to GET /health</li>
-                  <li>Configure the URL in Settings if different</li>
-                </ol>
-              </div>
-              
-              <div className="flex justify-end space-x-2">
-                <button
-                  onClick={retestConnectivity}
-                  className="btn btn-primary btn-sm"
-                >
-                  Re-test Connectivity
-                </button>
-                <button
-                  onClick={() => setShowHelperModal(false)}
-                  className="btn btn-ghost btn-sm"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

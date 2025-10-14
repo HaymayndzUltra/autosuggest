@@ -17,7 +17,12 @@ import FormData from "form-data";
 import fs, { FSWatcher } from "fs";
 import path from "path";
 import { Buffer } from "buffer";
+import { spawn } from 'child_process';
 import { createClient, LiveTranscriptionEvents } from "@deepgram/sdk";
+import { ASRHealthChecker } from './utils/asrHealthCheck';
+import { ASRProviderController } from './utils/providerController';
+import { LocalASRClient } from './utils/localASRClient';
+import { MetricsLogger } from './utils/metricsLogger';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 import electronSquirrelStartup from "electron-squirrel-startup";
@@ -70,6 +75,13 @@ const PROMPT_FILE_MAPPINGS: { key: PromptFileKey; filename: string }[] = [
 let mainWindow: BrowserWindow | null = null;
 let contextWatcher: FSWatcher | null = null;
 let promptWatcher: FSWatcher | null = null;
+
+// ASR Provider state
+let activeASRProvider: 'local' | 'deepgram' | null = null;
+let localASRFailureCount = 0;
+let lastLocalASRFailureTime: number | null = null;
+let localASRClient: LocalASRClient | null = null;
+let metricsLogger: MetricsLogger;
 
 const readContextFiles = (): ContextFileResult => {
   const contextDir = path.join(__dirname, "..", "context");
@@ -270,7 +282,27 @@ const setupFileWatchers = () => {
   }
 };
 
+// Auto-start local ASR on app launch
+const startLocalASR = () => {
+  const scriptPath = path.join(__dirname, '..', 'scripts', 'start-local-asr.bat');
+  
+  console.log('🚀 Starting Local ASR service...');
+  
+  const process = spawn(scriptPath, [], {
+    detached: true,
+    stdio: 'ignore',
+    shell: true,
+  });
+  
+  process.unref(); // Don't wait for the process
+  
+  console.log('✅ Local ASR startup initiated');
+};
+
 const createWindow = (): void => {
+  // Initialize metrics logger
+  metricsLogger = MetricsLogger.getInstance();
+  
   mainWindow = new BrowserWindow({
     height: 1000,
     width: 1300,
@@ -288,7 +320,7 @@ const createWindow = (): void => {
         responseHeaders: {
           ...details.responseHeaders,
           "Content-Security-Policy": [
-            "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https://api.openai.com;",
+            "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https://api.openai.com http://127.0.0.1:* http://localhost:* ws: wss:;",
           ],
         },
       });
@@ -380,7 +412,16 @@ ipcMain.handle(
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.on("ready", createWindow);
+app.on("ready", () => {
+  // Try to start local ASR (non-blocking)
+  try {
+    startLocalASR();
+  } catch (error) {
+    console.warn('⚠️ Failed to auto-start Local ASR:', error);
+  }
+  
+  createWindow();
+});
 
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the
@@ -469,6 +510,8 @@ app.on("before-quit", () => {
     api_call_method: config.api_call_method || "direct",
     primaryLanguage: config.primaryLanguage || "en",
     deepgram_api_key: config.deepgram_api_key || "",
+    asr_provider: config.asr_provider || "auto",
+    local_asr_url: config.local_asr_url || "http://127.0.0.1:9001",
   };
   store.clear();
   store.set("config", apiInfo);
@@ -633,6 +676,38 @@ ipcMain.handle("callOpenAI", async (event, { config, messages, signal }) => {
   }
 });
 
+ipcMain.handle("callOpenAIStream", async (event, { config, messages }) => {
+  try {
+    const openai = new OpenAI({
+      apiKey: config.openai_key,
+      baseURL: normalizeApiBaseUrl(config.api_base),
+    });
+
+    const stream = await openai.chat.completions.create({
+      model: config.gpt_model || "gpt-3.5-turbo",
+      messages: messages,
+      temperature: config.temperature || 0.7,
+      max_tokens: config.max_tokens || 2000,
+      stream: true,
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || "";
+      if (content) {
+        event.sender.send('openai-stream-chunk', { content, done: false });
+      }
+    }
+    
+    // Send completion signal
+    event.sender.send('openai-stream-chunk', { content: "", done: true });
+    
+    return { success: true };
+  } catch (error) {
+    event.sender.send('openai-stream-chunk', { content: "", done: true, error: error.message });
+    return { error: error.message };
+  }
+});
+
 ipcMain.handle("get-desktop-sources", async () => {
   try {
     const sources = await desktopCapturer.getSources({
@@ -662,28 +737,120 @@ function normalizeApiBaseUrl(url: string): string {
 
 let deepgramConnection: any = null;
 
-ipcMain.handle("start-deepgram", async (event, config) => {
-  try {
-    if (!config.deepgram_key) {
-      throw new Error("Deepgram API key lose");
+/**
+ * Switch ASR provider and notify renderer
+ */
+const switchASRProvider = async (newProvider: 'local' | 'deepgram' | null, reason: 'timeout' | 'errors' | 'manual' | 'health_check') => {
+  const fromProvider = activeASRProvider;
+  const switchStartTime = Date.now();
+  activeASRProvider = newProvider;
+  
+  console.log(`🔄 ASR Provider switched: ${fromProvider} → ${newProvider} (${reason})`);
+  
+  // Log metrics
+  if (metricsLogger) {
+    const switchLatency = Date.now() - switchStartTime;
+    metricsLogger.logProviderSwitch(fromProvider, newProvider, reason, switchLatency);
+  }
+  
+  // Notify renderer of provider change
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('asr-provider-changed', {
+      from: fromProvider,
+      to: newProvider,
+      reason,
+      timestamp: Date.now(),
+    });
+  }
+  
+  // Reset failure counters when switching
+  if (newProvider === 'local') {
+    localASRFailureCount = 0;
+    lastLocalASRFailureTime = null;
+  }
+};
+
+/**
+ * Handle local ASR failure and potentially switch to Deepgram
+ */
+const handleLocalASRFailure = async (config: any) => {
+  localASRFailureCount++;
+  lastLocalASRFailureTime = Date.now();
+  
+  console.log(`❌ Local ASR failure #${localASRFailureCount}`);
+  
+  // Check if we should failover to Deepgram
+  if (ASRProviderController.shouldFailoverToDeepgram(
+    localASRFailureCount,
+    !!config.deepgram_api_key,
+    lastLocalASRFailureTime
+  )) {
+    await switchASRProvider('deepgram', 'errors');
+    
+    // Start Deepgram if not already running
+    if (!deepgramConnection) {
+      try {
+        const result = await startDeepgramConnection(config.deepgram_api_key);
+        if (!result.success) {
+          console.error('Failed to start Deepgram after failover:', result.error);
+        }
+      } catch (error) {
+        console.error('Error starting Deepgram after failover:', error);
+      }
     }
-    const deepgram = createClient(config.deepgram_key);
+  }
+};
+
+/**
+ * Handle Deepgram failure and potentially switch back to local
+ */
+const handleDeepgramFailure = async (config: any) => {
+  console.log('❌ Deepgram connection failed');
+  
+  // Check if we should switch back to local
+  const localHealth = await ASRHealthChecker.checkLocalASR(config.local_asr_url || 'http://127.0.0.1:9001');
+  
+  if (ASRProviderController.shouldSwitchBackToLocal(localHealth, 'Deepgram connection lost')) {
+    await switchASRProvider('local', 'health_check');
+  } else {
+    // Neither provider available
+    await switchASRProvider(null, 'errors');
+  }
+};
+/**
+ * Start Deepgram connection (reusable function)
+ */
+const startDeepgramConnection = async (deepgramKey: string): Promise<{ success: boolean, error?: string }> => {
+  try {
+    if (!deepgramKey) {
+      throw new Error("Deepgram API key missing");
+    }
+    
+    const deepgram = createClient(deepgramKey);
     deepgramConnection = deepgram.listen.live({
       punctuate: true,
-      interim_results: false,
-      model: "general",
-      language: config.primaryLanguage || "en",
+      interim_results: true,
+      model: "nova-2",
+      language: "en",
       encoding: "linear16",
       sample_rate: 16000,
-      endpointing: 1500,
+      endpointing: 6000, // Increased from 3000ms for better continuity
+      vad_events: true, // Voice Activity Detection
+      filler_words: true, // Capture natural speech patterns
+      utterance_end_ms: 1000, // Quick finalization after brief pause
+      smart_format: true,
     });
 
     deepgramConnection.addListener(LiveTranscriptionEvents.Open, () => {
-      event.sender.send("deepgram-status", { status: "open" });
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("deepgram-status", { status: "open" });
+      }
     });
 
     deepgramConnection.addListener(LiveTranscriptionEvents.Close, () => {
-      event.sender.send("deepgram-status", { status: "closed" });
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("deepgram-status", { status: "closed" });
+      }
     });
 
     deepgramConnection.addListener(
@@ -697,10 +864,11 @@ ipcMain.handle("start-deepgram", async (event, config) => {
           data.channel.alternatives[0]
         ) {
           const transcript = data.channel.alternatives[0].transcript;
-          if (transcript) {
-            event.sender.send("deepgram-transcript", {
+          if (transcript && mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("deepgram-transcript", {
               transcript,
               is_final: true,
+              provider: 'deepgram',
             });
           }
         }
@@ -710,7 +878,13 @@ ipcMain.handle("start-deepgram", async (event, config) => {
     deepgramConnection.addListener(
       LiveTranscriptionEvents.Error,
       (err: any) => {
-        event.sender.send("deepgram-error", err);
+        console.error('Deepgram error:', err);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("deepgram-error", err);
+        }
+        // Handle Deepgram failure for failover
+        const config = store.get("config") || {};
+        handleDeepgramFailure(config);
       }
     );
 
@@ -722,18 +896,103 @@ ipcMain.handle("start-deepgram", async (event, config) => {
 
     return { success: true };
   } catch (error) {
-    return { success: false, error: error.message };
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+};
+
+ipcMain.handle("start-deepgram", async (event, config) => {
+  return await startDeepgramConnection(config.deepgram_key);
+});
+
+ipcMain.handle("start-asr", async (event, config) => {
+  try {
+    // Get health status
+    const healthStatus = await ASRHealthChecker.checkBothProviders({
+      local_asr_url: config.local_asr_url,
+      deepgram_api_key: config.deepgram_api_key,
+    });
+    
+    const hasDeepgramKey = !!(config.deepgram_api_key && config.deepgram_api_key.trim());
+    const asrMode = config.asr_provider || 'auto';
+    
+    // Select provider
+    const selectedProvider = ASRProviderController.selectProvider(
+      asrMode,
+      healthStatus.local,
+      hasDeepgramKey
+    );
+    
+    if (!selectedProvider) {
+      return { success: false, error: 'No ASR provider available' };
+    }
+    
+    // Set active provider
+    activeASRProvider = selectedProvider;
+    
+    // Start the selected provider
+    let result;
+    if (selectedProvider === 'local') {
+      result = await startLocalASRConnection(config);
+    } else {
+      result = await startDeepgramConnection(config.deepgram_api_key);
+    }
+    
+    if (result.success) {
+      console.log(`✅ Started ${selectedProvider} ASR successfully`);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Failed to start ASR:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : String(error) 
+    };
   }
 });
 
+const startLocalASRConnection = async (config: any): Promise<{ success: boolean, error?: string }> => {
+  try {
+    const localUrl = config.local_asr_url || 'http://127.0.0.1:9001';
+    
+    // Create and connect to local ASR client
+    localASRClient = new LocalASRClient(localUrl);
+    await localASRClient.connect();
+    
+    console.log('✅ Local ASR started successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('❌ Failed to start local ASR:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error.message : String(error) 
+    };
+  }
+};
+
 ipcMain.handle("send-audio-to-deepgram", async (event, audioData) => {
-  if (deepgramConnection) {
+  // Route audio based on active provider
+  if (activeASRProvider === 'local' && localASRClient) {
+    try {
+      await localASRClient.sendAudioChunk(audioData);
+    } catch (error) {
+      console.error('❌ Failed to send audio to local ASR:', error);
+      // Handle local ASR failure
+      const config = await store.get("config") || {};
+      await handleLocalASRFailure(config);
+    }
+  } else if (activeASRProvider === 'deepgram' && deepgramConnection) {
     try {
       const buffer = Buffer.from(audioData);
       deepgramConnection.send(buffer);
     } catch (error) {
-      console.error("failed send data to Deepgram :", error);
+      console.error("❌ Failed to send data to Deepgram:", error);
+      // Handle Deepgram failure
+      const config = await store.get("config") || {};
+      await handleDeepgramFailure(config);
     }
+  } else {
+    console.warn('⚠️ No active ASR provider or connection not ready');
   }
 });
 
@@ -742,6 +1001,25 @@ ipcMain.handle("stop-deepgram", () => {
     deepgramConnection.finish();
     deepgramConnection = null;
   }
+  if (localASRClient) {
+    localASRClient.disconnect();
+    localASRClient = null;
+  }
+  activeASRProvider = null;
+});
+
+// Handle local ASR transcript events
+ipcMain.handle("local-asr-transcript", async (event, transcriptData) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("deepgram-transcript", transcriptData);
+  }
+});
+
+// Handle local ASR failures
+ipcMain.handle("local-asr-failure", async (event, failureData) => {
+  console.log('❌ Local ASR failure reported:', failureData);
+  const config = await store.get("config") || {};
+  await handleLocalASRFailure(config);
 });
 
 // IPC handlers for loading context and prompt files
@@ -760,5 +1038,66 @@ ipcMain.handle("load-prompt-files", async () => {
   } catch (error) {
     console.error("Failed to load prompt files:", error);
     return notifyPromptUpdate();
+  }
+});
+
+ipcMain.handle("export-metrics", async () => {
+  try {
+    if (metricsLogger) {
+      return { success: true, data: metricsLogger.exportSessionLog() };
+    } else {
+      return { success: false, error: 'Metrics logger not initialized' };
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle("get-metrics-summary", async () => {
+  try {
+    if (metricsLogger) {
+      return { success: true, data: metricsLogger.getSessionSummary() };
+    } else {
+      return { success: false, error: 'Metrics logger not initialized' };
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle("check-asr-health", async (event, config) => {
+  try {
+    console.log('🔍 Checking ASR health for providers...');
+    const healthStatus = await ASRHealthChecker.checkBothProviders({
+      local_asr_url: config.local_asr_url,
+      deepgram_api_key: config.deepgram_api_key,
+    });
+    
+    console.log('✅ ASR health check completed:', {
+      local: healthStatus.local.healthy ? 'healthy' : 'unhealthy',
+      deepgram: healthStatus.deepgram.healthy ? 'healthy' : 'unhealthy',
+    });
+    
+    // Log health check metrics
+    if (metricsLogger) {
+      metricsLogger.logHealthCheck('local', healthStatus.local.healthy, healthStatus.local.latency, healthStatus.local.error);
+      metricsLogger.logHealthCheck('deepgram', healthStatus.deepgram.healthy, healthStatus.deepgram.latency, healthStatus.deepgram.error);
+    }
+    
+    return healthStatus;
+  } catch (error) {
+    console.error("Failed to check ASR health:", error);
+    return {
+      local: {
+        healthy: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        lastChecked: Date.now(),
+      },
+      deepgram: {
+        healthy: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        lastChecked: Date.now(),
+      },
+    };
   }
 });

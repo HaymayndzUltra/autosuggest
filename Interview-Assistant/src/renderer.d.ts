@@ -7,22 +7,6 @@ export type ContextFileKey =
 
 export type PromptFileKey = 'behaviorRules' | 'languageGuide' | 'responseStyle';
 
-export type ASRProvider = 'auto' | 'local' | 'deepgram';
-
-export interface ASRHealthStatus {
-  healthy: boolean;
-  latency?: number;
-  error?: string;
-  lastChecked?: number;
-}
-
-export interface ProviderSwitchEvent {
-  from: 'local' | 'deepgram' | null;
-  to: 'local' | 'deepgram' | null;
-  reason: 'timeout' | 'errors' | 'manual' | 'health_check';
-  timestamp: number;
-}
-
 export interface WatchedFileStatus {
   exists: boolean;
   hasContent: boolean;
@@ -60,7 +44,6 @@ export interface ElectronAPI {
     listener: (payload: PromptFilePayload) => void,
   ) => () => void;
   getSystemAudioStream: () => Promise<string[]>;
-  checkASRHealth: (config: any) => Promise<{ local: ASRHealthStatus, deepgram: ASRHealthStatus }>;
   ipcRenderer: {
     removeAllListeners: any;
     invoke(channel: string, ...args: any[]): Promise<any>;
@@ -72,16 +55,6 @@ export interface ElectronAPI {
     messages: any[];
     signal?: AbortSignal;
   }) => Promise<{ content: string } | { error: string }>;
-  callOpenAIStream: (params: {
-    config: any;
-    messages: any[];
-  }) => Promise<{ success: boolean } | { error: string }>;
-  startASR: (config: any) => Promise<{ success: boolean, error?: string }>;
-  startLocalASR: (config: any) => Promise<{ success: boolean, error?: string }>;
-  startDeepgram: (config: any) => Promise<{ success: boolean, error?: string }>;
-  stopASR: () => Promise<void>;
-  exportMetrics: () => Promise<{ success: boolean, data?: string, error?: string }>;
-  getMetricsSummary: () => Promise<{ success: boolean, data?: any, error?: string }>;
   transcribeAudio: (audioBuffer: ArrayBuffer, config: any) => Promise<TranscriptionResult>;
 }
 

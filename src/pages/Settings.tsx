@@ -3,6 +3,7 @@ import { useError } from '../contexts/ErrorContext';
 import ErrorDisplay from '../components/ErrorDisplay';
 import { languageOptions } from '../utils/languageOptions';
 import { usePrompt } from '../contexts/PromptContext';
+import { ASRProviderController } from '../utils/providerController';
 
 const Settings: React.FC = () => {
   const { error, setError, clearError } = useError();
@@ -17,6 +18,9 @@ const Settings: React.FC = () => {
   const [secondaryLanguage, setSecondaryLanguage] = useState('');
   const [deepgramApiKey, setDeepgramApiKey] = useState('');
   const [showPromptSettings, setShowPromptSettings] = useState(false);
+  const [asrProvider, setAsrProvider] = useState<'auto' | 'local' | 'deepgram'>('auto');
+  const [localAsrUrl, setLocalAsrUrl] = useState('http://127.0.0.1:9001');
+  const [asrHealthStatus, setAsrHealthStatus] = useState<{ local: any, deepgram: any } | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -32,11 +36,16 @@ const Settings: React.FC = () => {
       setPrimaryLanguage(config.primaryLanguage || 'auto');
       setSecondaryLanguage(config.secondaryLanguage || '');
       setDeepgramApiKey(config.deepgram_api_key || '');
+      setAsrProvider(config.asr_provider || 'auto');
+      setLocalAsrUrl(config.local_asr_url || 'http://127.0.0.1:9001');
       
       // Load prompt config if available
       if (config.promptConfig) {
         updatePromptConfig(config.promptConfig);
       }
+      
+      // Check ASR health
+      await checkASRHealth();
     } catch (err) {
       console.error('Failed to load configuration', err);
       setError('Failed to load configuration. Please check your settings.');
@@ -52,6 +61,8 @@ const Settings: React.FC = () => {
         api_call_method: apiCallMethod,
         primaryLanguage: primaryLanguage,
         deepgram_api_key: deepgramApiKey,
+        asr_provider: asrProvider,
+        local_asr_url: localAsrUrl,
         promptConfig: promptConfig,
       });
       setSaveSuccess(true);
@@ -86,6 +97,19 @@ const Settings: React.FC = () => {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setTestResult(`API configuration test failed: ${errorMessage}`);
       setError(`Failed to test API configuration: ${errorMessage}`);
+    }
+  };
+
+  const checkASRHealth = async () => {
+    try {
+      const config = {
+        local_asr_url: localAsrUrl,
+        deepgram_api_key: deepgramApiKey,
+      };
+      const healthStatus = await window.electronAPI.checkASRHealth(config);
+      setAsrHealthStatus(healthStatus);
+    } catch (error) {
+      console.error('Failed to check ASR health:', error);
     }
   };
 
@@ -161,6 +185,101 @@ const Settings: React.FC = () => {
             </option>
           ))}
         </select>
+      </div>
+      
+      {/* ASR Provider Settings */}
+      <div className="divider my-8"></div>
+      <h2 className="text-xl font-bold mb-4">ASR Provider Settings</h2>
+      
+      <div className="mb-4">
+        <label className="label">ASR Provider Mode</label>
+        <div className="space-y-2">
+          <label className="flex items-center space-x-2">
+            <input
+              type="radio"
+              name="asrProvider"
+              value="auto"
+              checked={asrProvider === 'auto'}
+              onChange={(e) => setAsrProvider(e.target.value as 'auto' | 'local' | 'deepgram')}
+              className="radio radio-primary"
+            />
+            <span>Auto (prefer local, fallback to Deepgram)</span>
+          </label>
+          <label className="flex items-center space-x-2">
+            <input
+              type="radio"
+              name="asrProvider"
+              value="local"
+              checked={asrProvider === 'local'}
+              onChange={(e) => setAsrProvider(e.target.value as 'auto' | 'local' | 'deepgram')}
+              className="radio radio-primary"
+            />
+            <span>Local ASR only</span>
+          </label>
+          <label className="flex items-center space-x-2">
+            <input
+              type="radio"
+              name="asrProvider"
+              value="deepgram"
+              checked={asrProvider === 'deepgram'}
+              onChange={(e) => setAsrProvider(e.target.value as 'auto' | 'local' | 'deepgram')}
+              className="radio radio-primary"
+            />
+            <span>Deepgram only</span>
+          </label>
+        </div>
+        <label className="label">
+          <span className="label-text-alt">
+            {ASRProviderController.getModeRequirements(asrProvider).description}
+          </span>
+        </label>
+      </div>
+      
+      <div className="mb-4">
+        <label className="label">Local ASR URL</label>
+        <input
+          type="text"
+          value={localAsrUrl}
+          onChange={(e) => setLocalAsrUrl(e.target.value)}
+          className="input input-bordered w-full"
+        />
+        <label className="label">
+          <span className="label-text-alt">
+            URL of your local ASR service (e.g., http://127.0.0.1:9001)
+          </span>
+        </label>
+      </div>
+      
+      <div className="mb-4">
+        <h4 className="font-semibold mb-2">Provider Status:</h4>
+        <div className="space-y-2">
+          <div className="flex items-center space-x-2">
+            <div className={`w-3 h-3 rounded-full ${asrHealthStatus?.local?.healthy ? 'bg-green-500' : 'bg-red-500'}`}></div>
+            <span>Local ASR: {asrHealthStatus?.local?.healthy ? 'Healthy' : 'Unavailable'}</span>
+            {asrHealthStatus?.local?.latency && (
+              <span className="text-sm text-gray-500">({asrHealthStatus.local.latency}ms)</span>
+            )}
+            {asrHealthStatus?.local?.error && (
+              <span className="text-sm text-red-500">({asrHealthStatus.local.error})</span>
+            )}
+          </div>
+          <div className="flex items-center space-x-2">
+            <div className={`w-3 h-3 rounded-full ${asrHealthStatus?.deepgram?.healthy ? 'bg-green-500' : 'bg-red-500'}`}></div>
+            <span>Deepgram: {asrHealthStatus?.deepgram?.healthy ? 'Ready' : 'No API Key'}</span>
+            {asrHealthStatus?.deepgram?.latency && (
+              <span className="text-sm text-gray-500">({asrHealthStatus.deepgram.latency}ms)</span>
+            )}
+            {asrHealthStatus?.deepgram?.error && (
+              <span className="text-sm text-red-500">({asrHealthStatus.deepgram.error})</span>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={checkASRHealth}
+          className="btn btn-outline btn-sm mt-2"
+        >
+          Re-test Connectivity
+        </button>
       </div>
       <div className="flex justify-between mt-4">
         <button onClick={handleSave} className="btn btn-primary">

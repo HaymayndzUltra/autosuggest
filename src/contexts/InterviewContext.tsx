@@ -9,6 +9,12 @@ interface InterviewContextType {
   setDisplayedAiResult: React.Dispatch<React.SetStateAction<string>>;
   lastProcessedIndex: number;
   setLastProcessedIndex: React.Dispatch<React.SetStateAction<number>>;
+  liveSuggestion: string;
+  setLiveSuggestion: React.Dispatch<React.SetStateAction<string>>;
+  suggestionHistory: string[];
+  setSuggestionHistory: React.Dispatch<React.SetStateAction<string[]>>;
+  lastTranscriptChunk: string;
+  setLastTranscriptChunk: React.Dispatch<React.SetStateAction<string>>;
 }
 
 const InterviewContext = createContext<InterviewContextType | undefined>(undefined);
@@ -18,6 +24,9 @@ export const InterviewProvider: React.FC<{ children: ReactNode }> = ({ children 
   const [aiResult, setAiResult] = useState("");
   const [displayedAiResult, setDisplayedAiResult] = useState("");
   const [lastProcessedIndex, setLastProcessedIndex] = useState(0);
+  const [liveSuggestion, setLiveSuggestion] = useState("");
+  const [suggestionHistory, setSuggestionHistory] = useState<string[]>([]);
+  const [lastTranscriptChunk, setLastTranscriptChunk] = useState("");
 
   return (
     <InterviewContext.Provider
@@ -30,6 +39,12 @@ export const InterviewProvider: React.FC<{ children: ReactNode }> = ({ children 
         setDisplayedAiResult,
         lastProcessedIndex,
         setLastProcessedIndex,
+        liveSuggestion,
+        setLiveSuggestion,
+        suggestionHistory,
+        setSuggestionHistory,
+        lastTranscriptChunk,
+        setLastTranscriptChunk,
       }}
     >
       {children}
