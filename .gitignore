@@ -93,3 +93,7 @@ out/
 
 # Electron
 **/node_modules/electron/**
+
+# Whisper models (large files)
+whisper-models/
+*.pt
