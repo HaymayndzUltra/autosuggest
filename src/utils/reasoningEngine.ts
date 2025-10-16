@@ -11,7 +11,7 @@ export class SuggestionEngine {
   private readonly maxHistorySize = 5;
   private isProcessing = false;
   private lastProcessTime = 0;
-  private readonly minProcessInterval = 500; // Reduced from 3000ms for faster streaming
+  private readonly minProcessInterval = 300; // Allow faster refresh for real-time streaming
 
   /**
    * Extract client intent from transcript using simple heuristics
@@ -129,11 +129,29 @@ export class SuggestionEngine {
   private calculateSimilarity(text1: string, text2: string): number {
     const words1 = text1.split(' ');
     const words2 = text2.split(' ');
-    
+
     const intersection = words1.filter(word => words2.includes(word));
     const union = [...new Set([...words1, ...words2])];
-    
+
     return intersection.length / union.length;
+  }
+
+  /**
+   * Find last safe word boundary for streaming output
+   */
+  private findLastWordBoundaryIndex(text: string): number {
+    for (let i = text.length - 1; i >= 0; i--) {
+      const char = text[i];
+      if (/\s/.test(char)) {
+        return i + 1;
+      }
+
+      if (/[\.,!?:;\-]/.test(char)) {
+        return i + 1;
+      }
+    }
+
+    return -1;
   }
 
   /**
@@ -288,18 +306,39 @@ export class SuggestionEngine {
       console.log('🎯 Extracted intent:', intent);
       
       let fullSuggestion = '';
-      
+      let pendingStreamText = '';
+
+      const flushPendingText = (force = false) => {
+        if (!pendingStreamText) {
+          return;
+        }
+
+        const boundaryIndex = force
+          ? pendingStreamText.length
+          : this.findLastWordBoundaryIndex(pendingStreamText);
+
+        if (boundaryIndex <= 0) {
+          return;
+        }
+
+        const emitText = pendingStreamText.slice(0, boundaryIndex);
+        pendingStreamText = pendingStreamText.slice(boundaryIndex);
+        fullSuggestion += emitText;
+        onChunk(emitText);
+      };
+
       // Generate streaming suggestion
       await this.generateSuggestionStream(
-        intent, 
-        transcript, 
-        config, 
+        intent,
+        transcript,
+        config,
         contextData,
         (chunk: string) => {
-          fullSuggestion += chunk;
-          onChunk(chunk);
+          pendingStreamText += chunk;
+          flushPendingText(false);
         },
         () => {
+          flushPendingText(true);
           // Check for duplicates
           const isDuplicate = this.isDuplicateSuggestion(fullSuggestion, this.suggestionHistory);
           
