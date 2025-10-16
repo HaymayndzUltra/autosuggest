@@ -7,10 +7,12 @@ export class LocalASRClient {
   private baseUrl: string;
   private audioBuffer: ArrayBuffer[] = [];
   private batchTimer: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private isConnected = false;
   private failureCount = 0;
-  private readonly BATCH_INTERVAL = 1000; // 1 second
+  private readonly BATCH_INTERVAL = 400; // 0.4 seconds for lower latency
   private readonly MAX_RETRIES = 3;
+  private readonly RECONNECT_DELAY = 2000; // 2 seconds before reconnect attempt
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
@@ -22,7 +24,12 @@ export class LocalASRClient {
   async connect(): Promise<void> {
     try {
       console.log(`🔗 Connecting to local ASR at ${this.baseUrl}`);
-      
+
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+
       // Test connection with health check
       const response = await axios.get(`${this.baseUrl}/docs`, {
         timeout: 3000,
@@ -32,6 +39,7 @@ export class LocalASRClient {
       if (response.status >= 200 && response.status < 300) {
         this.isConnected = true;
         this.failureCount = 0;
+        this.reconnectTimer = null;
         console.log('✅ Local ASR connected successfully');
       } else {
         throw new Error(`Health check failed: ${response.status} ${response.statusText}`);
@@ -40,6 +48,7 @@ export class LocalASRClient {
       this.isConnected = false;
       const errorMsg = axios.isAxiosError(error) ? error.message : String(error);
       console.error('❌ Failed to connect to local ASR:', errorMsg);
+      this.scheduleReconnect();
       throw new Error(`Local ASR connection failed: ${errorMsg}`);
     }
   }
@@ -165,34 +174,34 @@ export class LocalASRClient {
       
       console.log(`📤 Sending audio batch: ${wavBuffer.byteLength} bytes`);
 
-    const response = await axios.post(`${this.baseUrl}/asr?task=transcribe`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 60000, // 60 second timeout (increased for CPU processing)
-      validateStatus: (status) => status < 500,
-    });
+      const response = await axios.post(`${this.baseUrl}/asr?task=transcribe`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 60000, // 60 second timeout (increased for CPU processing)
+        validateStatus: (status) => status < 500,
+      });
 
-    if (response.status >= 200 && response.status < 300) {
-      // Parse response and emit transcript event
-      const transcriptData = response.data;
-      
-      if (transcriptData && transcriptData.text) {
-        // Emit transcript event (this will be handled by the main process)
-        // We'll use a custom event for local ASR transcripts
-        if (typeof window !== 'undefined' && window.electronAPI) {
-          // This is a renderer context - emit to main process
-          window.electronAPI.ipcRenderer.invoke('local-asr-transcript', {
-            transcript: transcriptData.text,
-            is_final: true,
-            provider: 'local',
-            confidence: transcriptData.confidence || 1.0,
-          });
+      if (response.status >= 200 && response.status < 300) {
+        // Parse response and emit transcript event
+        const transcriptData = response.data;
+
+        if (transcriptData && transcriptData.text) {
+          // Emit transcript event (this will be handled by the main process)
+          // We'll use a custom event for local ASR transcripts
+          if (typeof window !== 'undefined' && window.electronAPI) {
+            // This is a renderer context - emit to main process
+            window.electronAPI.ipcRenderer.invoke('local-asr-transcript', {
+              transcript: transcriptData.text,
+              is_final: true,
+              provider: 'local',
+              confidence: transcriptData.confidence || 1.0,
+            });
+          }
         }
+      } else {
+        throw new Error(`Local ASR error: ${response.status} ${response.statusText}`);
       }
-    } else {
-      throw new Error(`Local ASR error: ${response.status} ${response.statusText}`);
-    }
     } catch (error) {
       if (axios.isAxiosError(error)) {
         if (error.code === 'ECONNABORTED') {
@@ -214,11 +223,14 @@ export class LocalASRClient {
   private handleFailure(): void {
     this.failureCount++;
     console.log(`❌ Local ASR failure #${this.failureCount}`);
-    
+
+    this.isConnected = false;
+    this.scheduleReconnect();
+
     if (this.failureCount >= this.MAX_RETRIES) {
       console.log('🔴 Local ASR failed too many times, marking as disconnected');
       this.isConnected = false;
-      
+
       // Notify main process of failure
       if (typeof window !== 'undefined' && window.electronAPI) {
         window.electronAPI.ipcRenderer.invoke('local-asr-failure', {
@@ -234,9 +246,14 @@ export class LocalASRClient {
    */
   disconnect(): void {
     console.log('🔌 Disconnecting from local ASR');
-    
+
     this.isConnected = false;
-    
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     // Clear any pending batches
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
@@ -262,6 +279,29 @@ export class LocalASRClient {
       connected: this.isConnected,
       failureCount: this.failureCount,
     };
+  }
+
+  /**
+   * Schedule a reconnect attempt to the local ASR service
+   */
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer || this.failureCount >= this.MAX_RETRIES) {
+      return;
+    }
+
+    console.log(`🔄 Scheduling local ASR reconnect in ${this.RECONNECT_DELAY}ms`);
+
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null;
+      try {
+        await this.connect();
+        console.log('🔁 Local ASR reconnected successfully');
+      } catch (error) {
+        const errorMsg = axios.isAxiosError(error) ? error.message : String(error);
+        console.error('❌ Local ASR reconnect failed:', errorMsg);
+        this.handleFailure();
+      }
+    }, this.RECONNECT_DELAY);
   }
 
   /**
