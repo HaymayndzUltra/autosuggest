@@ -11,9 +11,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   highlightCode: (code: string, language: string) => ipcRenderer.invoke('highlight-code', code, language),
   loadContextFiles: () => ipcRenderer.invoke('load-context-files'),
   loadPromptFiles: () => ipcRenderer.invoke('load-prompt-files'),
-  checkASRHealth: (config: any) => ipcRenderer.invoke('check-asr-health', config),
-  exportMetrics: () => ipcRenderer.invoke('export-metrics'),
-  getMetricsSummary: () => ipcRenderer.invoke('get-metrics-summary'),
   onContextFilesUpdated: (listener: (payload: any) => void) => {
     const handler = (_event: unknown, payload: any) => listener(payload);
     ipcRenderer.on('context-files-updated', handler);
@@ -33,11 +30,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeListener: (channel: string, listener: (event: any, ...args: any[]) => void) => ipcRenderer.removeListener(channel, listener),
   },
   callOpenAI: (params: any) => ipcRenderer.invoke('callOpenAI', params),
-  callOpenAIStream: (params: any) => ipcRenderer.invoke('callOpenAIStream', params),
-  startASR: (config: any) => ipcRenderer.invoke('start-asr', config),
-  startLocalASR: (config: any) => ipcRenderer.invoke('start-local-asr', config),
-  startDeepgram: (config: any) => ipcRenderer.invoke('start-deepgram', config),
-  stopASR: () => ipcRenderer.invoke('stop-deepgram'),
   loadAudioProcessor: (): Promise<string> => ipcRenderer.invoke('load-audio-processor'),
   getSystemAudioStream: () => ipcRenderer.invoke('get-system-audio-stream'),
   transcribeAudioFile: (filePath: string, config: any) => ipcRenderer.invoke('transcribe-audio-file', filePath, config),

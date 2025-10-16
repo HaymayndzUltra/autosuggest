@@ -8,7 +8,7 @@ interface FileStatus {
   error?: string;
 }
 
-export interface PromptConfig {
+interface PromptConfig {
   behaviorRules: string;
   languageGuide: string;
   responseStyle: string;
@@ -18,7 +18,7 @@ export interface PromptConfig {
   responseStyleEnabled: boolean;
 }
 
-export interface ContextData {
+interface ContextData {
   resume: string;
   jobPost: string;
   discoveryQuestions: string;
