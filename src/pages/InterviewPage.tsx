@@ -49,6 +49,9 @@ const InterviewPage: React.FC = () => {
   const [asrHealthStatus, setAsrHealthStatus] = useState<{ local: any, deepgram: any } | null>(null);
   const [showHelperModal, setShowHelperModal] = useState(false);
   const aiResponseRef = useRef<HTMLDivElement>(null);
+  const lastFinalTranscriptRef = useRef<string>('');
+  const currentTextRef = useRef<string>(currentText);
+  const lastProcessedIndexRef = useRef<number>(lastProcessedIndex);
 
   const markdownStyles = `
     .markdown-body {
@@ -81,6 +84,14 @@ const InterviewPage: React.FC = () => {
       border-radius: 3px;
     }
   `;
+
+  useEffect(() => {
+    currentTextRef.current = currentText;
+  }, [currentText]);
+
+  useEffect(() => {
+    lastProcessedIndexRef.current = lastProcessedIndex;
+  }, [lastProcessedIndex]);
 
   useEffect(() => {
     loadConfig();
@@ -154,13 +165,19 @@ const InterviewPage: React.FC = () => {
 
   const handleSuggestionGeneration = async (newContent: string) => {
     try {
-      // Use rolling buffer approach - get last 50 words for context
-      const words = newContent.split(' ');
-      const bufferSize = 50;
+      const normalizedContent = newContent.replace(/\s+/g, ' ').trim();
+      if (!normalizedContent) {
+        return;
+      }
+
+      // Use rolling buffer approach - get last 60 tokens for context
+      const words = normalizedContent.match(/\S+/g) || [];
+      const bufferSize = 60;
       const bufferedContent = words.slice(-bufferSize).join(' ');
-      
+
       let currentSuggestion = '';
-      
+      setLiveSuggestion('');
+
       await suggestionEngine.processTranscriptStream(
         bufferedContent,
         promptConfig,
@@ -168,7 +185,7 @@ const InterviewPage: React.FC = () => {
         (chunk: string) => {
           // Stream chunks to live suggestion
           currentSuggestion += chunk;
-          setLiveSuggestion(currentSuggestion);
+          setLiveSuggestion(currentSuggestion.trim());
         },
         (intent: string, isDuplicate: boolean) => {
           if (!isDuplicate && currentSuggestion.trim()) {
@@ -178,7 +195,9 @@ const InterviewPage: React.FC = () => {
               return updated.slice(-5); // Keep only last 5
             });
             // CRITICAL: Update lastProcessedIndex to prevent re-processing same transcript
-            setLastProcessedIndex(currentText.length);
+            const newIndex = currentTextRef.current.length;
+            setLastProcessedIndex(newIndex);
+            lastProcessedIndexRef.current = newIndex;
             console.log('💡 New streaming suggestion:', currentSuggestion);
             console.log('🎯 Detected intent:', intent);
             console.log('📝 Based on transcript:', bufferedContent.slice(-100));
@@ -203,28 +222,53 @@ const InterviewPage: React.FC = () => {
     const handleDeepgramTranscript = (_event: any, data: any) => {
       if (data.transcript && data.is_final) {
         setCurrentText((prev: string) => {
-          const newTranscript = data.transcript.trim();
-          if (!prev.endsWith(newTranscript)) {
-            lastTranscriptTime = Date.now();
-            const updatedText = prev + (prev ? ' ' : '') + newTranscript;
-            
-            if (isAutoGPTEnabled) {
-              if (autoSubmitTimer) {
-                clearTimeout(autoSubmitTimer);
-              }
-              const newTimer = setTimeout(() => {
-                const newContent = updatedText.slice(lastProcessedIndex);
-                if (newContent.trim()) {
-                  // Use suggestion generation instead of full GPT call
-                  handleSuggestionGeneration(newContent);
-                }
-              }, 500); // Reduced to 500ms for faster streaming response
-              setAutoSubmitTimer(newTimer);
-            }
-            
-            return updatedText;
+          const incoming = String(data.transcript || '').replace(/\s+/g, ' ').trim();
+          if (!incoming) {
+            return prev;
           }
-          return prev;
+
+          const prevTrimmed = prev.replace(/\s+$/g, '');
+
+          if (prevTrimmed.endsWith(incoming) || incoming === lastFinalTranscriptRef.current) {
+            return prev;
+          }
+
+          lastTranscriptTime = Date.now();
+
+          const shouldMergeWord =
+            /[\p{L}\p{N}]$/u.test(prevTrimmed) &&
+            /^[\p{L}\p{N}]/u.test(incoming);
+
+          const updatedText = (() => {
+            if (!prevTrimmed) {
+              return incoming;
+            }
+
+            if (shouldMergeWord) {
+              return (prevTrimmed + incoming).trim();
+            }
+
+            return `${prevTrimmed} ${incoming}`.trim();
+          })();
+
+          lastFinalTranscriptRef.current = incoming;
+          currentTextRef.current = updatedText;
+
+          if (isAutoGPTEnabled) {
+            if (autoSubmitTimer) {
+              clearTimeout(autoSubmitTimer);
+            }
+            const newTimer = setTimeout(() => {
+              const newContent = updatedText.slice(lastProcessedIndexRef.current);
+              if (newContent.trim()) {
+                // Use suggestion generation instead of full GPT call
+                handleSuggestionGeneration(newContent);
+              }
+            }, 300); // Faster turnaround for real-time suggestions
+            setAutoSubmitTimer(newTimer);
+          }
+
+          return updatedText;
         });
       } else if (data.transcript && !data.is_final) {
         // Handle interim results for real-time feedback
@@ -237,17 +281,17 @@ const InterviewPage: React.FC = () => {
     };
 
     const checkAndSubmit = () => {
-      if (isAutoGPTEnabled && Date.now() - lastTranscriptTime >= 500) { // Reduced to 500ms for streaming
-        const newContent = currentText.slice(lastProcessedIndex);
+      if (isAutoGPTEnabled && Date.now() - lastTranscriptTime >= 300) { // Match the faster streaming cadence
+        const newContent = currentText.slice(lastProcessedIndexRef.current);
         if (newContent.trim()) {
           handleSuggestionGeneration(newContent);
         }
       }
-      checkTimer = setTimeout(checkAndSubmit, 1000);
+      checkTimer = setTimeout(checkAndSubmit, 600);
     };
 
     window.electronAPI.ipcRenderer.on('deepgram-transcript', handleDeepgramTranscript);
-    checkTimer = setTimeout(checkAndSubmit, 1000);
+    checkTimer = setTimeout(checkAndSubmit, 600);
 
     return () => {
       window.electronAPI.ipcRenderer.removeListener('deepgram-transcript', handleDeepgramTranscript);

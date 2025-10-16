@@ -7,9 +7,12 @@ export class LocalASRClient {
   private baseUrl: string;
   private audioBuffer: ArrayBuffer[] = [];
   private batchTimer: NodeJS.Timeout | null = null;
+  private isProcessingBatch = false;
+  private pendingProcess = false;
   private isConnected = false;
   private failureCount = 0;
-  private readonly BATCH_INTERVAL = 1000; // 1 second
+  private readonly BATCH_INTERVAL = 300; // Flush roughly every 300ms for lower latency
+  private readonly MAX_BATCH_BYTES = 24000; // ~0.35s of 16kHz mono audio
   private readonly MAX_RETRIES = 3;
 
   constructor(baseUrl: string) {
@@ -56,10 +59,25 @@ export class LocalASRClient {
     // Add to buffer
     this.audioBuffer.push(buffer);
 
-    // Start batch timer if not already running
-    if (!this.batchTimer) {
+    const bufferedBytes = this.getBufferedByteLength();
+
+    if (bufferedBytes >= this.MAX_BATCH_BYTES) {
+      // Flush immediately when we have enough audio to transcribe a full word boundary
+      if (this.batchTimer) {
+        clearTimeout(this.batchTimer);
+        this.batchTimer = null;
+      }
+
+      if (this.isProcessingBatch) {
+        this.pendingProcess = true;
+      } else {
+        void this.processBatch();
+      }
+    } else if (!this.batchTimer) {
+      // Otherwise schedule a short flush for snappier transcripts
       this.batchTimer = setTimeout(() => {
-        this.processBatch();
+        this.batchTimer = null;
+        void this.processBatch();
       }, this.BATCH_INTERVAL);
     }
   }
@@ -68,37 +86,64 @@ export class LocalASRClient {
    * Process batched audio data
    */
   private async processBatch(): Promise<void> {
-    if (this.audioBuffer.length === 0) {
-      this.batchTimer = null;
+    if (this.isProcessingBatch) {
+      this.pendingProcess = true;
       return;
     }
 
-    const batch = [...this.audioBuffer];
-    this.audioBuffer = [];
-    this.batchTimer = null;
+    this.isProcessingBatch = true;
 
     try {
-      // Combine audio buffers
-      const totalLength = batch.reduce((sum, buf) => sum + buf.byteLength, 0);
-      const combinedBuffer = new ArrayBuffer(totalLength);
-      const combinedView = new Uint8Array(combinedBuffer);
-      
-      let offset = 0;
-      for (const buf of batch) {
-        combinedView.set(new Uint8Array(buf), offset);
-        offset += buf.byteLength;
-      }
+      do {
+        this.pendingProcess = false;
 
-      // Send to local ASR
-      await this.sendBatchToASR(combinedBuffer);
-      
-      // Reset failure count on success
-      this.failureCount = 0;
-      
-    } catch (error) {
-      console.error('❌ Failed to process audio batch:', error);
-      this.handleFailure();
+        if (this.audioBuffer.length === 0) {
+          break;
+        }
+
+        const batch = [...this.audioBuffer];
+        this.audioBuffer = [];
+
+        try {
+          // Combine audio buffers
+          const totalLength = batch.reduce((sum, buf) => sum + buf.byteLength, 0);
+          const combinedBuffer = new ArrayBuffer(totalLength);
+          const combinedView = new Uint8Array(combinedBuffer);
+
+          let offset = 0;
+          for (const buf of batch) {
+            combinedView.set(new Uint8Array(buf), offset);
+            offset += buf.byteLength;
+          }
+
+          // Send to local ASR
+          await this.sendBatchToASR(combinedBuffer);
+
+          // Reset failure count on success
+          this.failureCount = 0;
+        } catch (error) {
+          console.error('❌ Failed to process audio batch:', error);
+          this.handleFailure();
+        }
+      } while (this.pendingProcess || this.audioBuffer.length > 0);
+    } finally {
+      this.isProcessingBatch = false;
+
+      if (this.audioBuffer.length > 0 && !this.batchTimer) {
+        // Ensure any remaining audio is flushed soon
+        this.batchTimer = setTimeout(() => {
+          this.batchTimer = null;
+          void this.processBatch();
+        }, this.BATCH_INTERVAL);
+      }
     }
+  }
+
+  /**
+   * Calculate current buffered byte length
+   */
+  private getBufferedByteLength(): number {
+    return this.audioBuffer.reduce((sum, buf) => sum + buf.byteLength, 0);
   }
 
   /**
@@ -165,34 +210,34 @@ export class LocalASRClient {
       
       console.log(`📤 Sending audio batch: ${wavBuffer.byteLength} bytes`);
 
-    const response = await axios.post(`${this.baseUrl}/asr?task=transcribe`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: 60000, // 60 second timeout (increased for CPU processing)
-      validateStatus: (status) => status < 500,
-    });
+      const response = await axios.post(`${this.baseUrl}/asr?task=transcribe`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 60000, // 60 second timeout (increased for CPU processing)
+        validateStatus: (status) => status < 500,
+      });
 
-    if (response.status >= 200 && response.status < 300) {
-      // Parse response and emit transcript event
-      const transcriptData = response.data;
-      
-      if (transcriptData && transcriptData.text) {
-        // Emit transcript event (this will be handled by the main process)
-        // We'll use a custom event for local ASR transcripts
-        if (typeof window !== 'undefined' && window.electronAPI) {
-          // This is a renderer context - emit to main process
-          window.electronAPI.ipcRenderer.invoke('local-asr-transcript', {
-            transcript: transcriptData.text,
-            is_final: true,
-            provider: 'local',
-            confidence: transcriptData.confidence || 1.0,
-          });
+      if (response.status >= 200 && response.status < 300) {
+        // Parse response and emit transcript event
+        const transcriptData = response.data;
+
+        if (transcriptData && transcriptData.text) {
+          // Emit transcript event (this will be handled by the main process)
+          // We'll use a custom event for local ASR transcripts
+          if (typeof window !== 'undefined' && window.electronAPI) {
+            // This is a renderer context - emit to main process
+            window.electronAPI.ipcRenderer.invoke('local-asr-transcript', {
+              transcript: transcriptData.text,
+              is_final: true,
+              provider: 'local',
+              confidence: transcriptData.confidence || 1.0,
+            });
+          }
         }
+      } else {
+        throw new Error(`Local ASR error: ${response.status} ${response.statusText}`);
       }
-    } else {
-      throw new Error(`Local ASR error: ${response.status} ${response.statusText}`);
-    }
     } catch (error) {
       if (axios.isAxiosError(error)) {
         if (error.code === 'ECONNABORTED') {
