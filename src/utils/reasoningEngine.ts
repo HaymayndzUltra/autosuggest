@@ -11,7 +11,7 @@ export class SuggestionEngine {
   private readonly maxHistorySize = 5;
   private isProcessing = false;
   private lastProcessTime = 0;
-  private readonly minProcessInterval = 500; // Reduced from 3000ms for faster streaming
+  private readonly minProcessInterval = 350; // Allow even faster cadence for streaming responses
 
   /**
    * Extract client intent from transcript using simple heuristics
@@ -21,33 +21,46 @@ export class SuggestionEngine {
     const text = transcript.toLowerCase().trim();
     
     // Question patterns
-    if (text.includes('?') || text.startsWith('what') || text.startsWith('how') || 
-        text.startsWith('why') || text.startsWith('when') || text.startsWith('where') ||
-        text.startsWith('can you') || text.startsWith('could you') || text.startsWith('would you')) {
+    if (text.includes('?') ||
+        text.startsWith('what') || text.startsWith('how') || text.startsWith('why') ||
+        text.startsWith('when') || text.startsWith('where') ||
+        text.startsWith('can you') || text.startsWith('could you') || text.startsWith('would you') ||
+        text.startsWith('ano') || text.startsWith('paano') || text.startsWith('bakit') ||
+        text.startsWith('kailan') || text.startsWith('saan') || text.startsWith('pwede') ||
+        text.startsWith('maaari bang')) {
       return 'question';
     }
-    
+
     // Technical discussion patterns
     if (text.includes('architecture') || text.includes('design') || text.includes('system') ||
-        text.includes('framework') || text.includes('technology') || text.includes('stack')) {
+        text.includes('framework') || text.includes('technology') || text.includes('stack') ||
+        text.includes('microservice') || text.includes('infrastructure') ||
+        text.includes('arkitektura') || text.includes('disenyo') ||
+        text.includes('sistema') || text.includes('teknolohiya')) {
       return 'technical_discussion';
     }
-    
+
     // Experience/background patterns
     if (text.includes('experience') || text.includes('background') || text.includes('worked') ||
-        text.includes('project') || text.includes('previous') || text.includes('before')) {
+        text.includes('project') || text.includes('previous') || text.includes('before') ||
+        text.includes('karanasan') || text.includes('nagtrabaho') ||
+        text.includes('proyekto') || text.includes('nakaraan')) {
       return 'experience_inquiry';
     }
-    
+
     // Problem-solving patterns
     if (text.includes('problem') || text.includes('challenge') || text.includes('issue') ||
-        text.includes('difficult') || text.includes('trouble') || text.includes('solve')) {
+        text.includes('difficult') || text.includes('trouble') || text.includes('solve') ||
+        text.includes('suliranin') || text.includes('hamon') ||
+        text.includes('isyu') || text.includes('solusyon')) {
       return 'problem_solving';
     }
-    
+
     // Process/methodology patterns
     if (text.includes('process') || text.includes('method') || text.includes('approach') ||
-        text.includes('workflow') || text.includes('how do you') || text.includes('methodology')) {
+        text.includes('workflow') || text.includes('how do you') || text.includes('methodology') ||
+        text.includes('proseso') || text.includes('paraan') ||
+        text.includes('daloy') || text.includes('metodolohiya')) {
       return 'process_inquiry';
     }
     
@@ -66,17 +79,27 @@ export class SuggestionEngine {
     if (timeMatches) phrases.push(...timeMatches.map(m => m.toLowerCase()));
     
     // Extract common project terms
-    const projectTerms = ['mvp', 'minimum viable product', 'prototype', 'demo', 'poc', 'proof of concept'];
+    const projectTerms = ['mvp', 'minimum viable product', 'prototype', 'demo', 'poc', 'proof of concept', 'pilot'];
     projectTerms.forEach(term => {
       if (text.includes(term)) phrases.push(term);
     });
-    
+
+    const filipinoProjectTerms = ['proyekto', 'balangkas', 'halimbawa', 'pagpapatunay', 'pagpapakita'];
+    filipinoProjectTerms.forEach(term => {
+      if (text.includes(term)) phrases.push(term);
+    });
+
     // Extract key verbs
-    const keyVerbs = ['estimate', 'deliver', 'build', 'develop', 'create', 'launch'];
+    const keyVerbs = ['estimate', 'deliver', 'build', 'develop', 'create', 'launch', 'optimize'];
     keyVerbs.forEach(verb => {
       if (text.includes(verb)) phrases.push(verb);
     });
-    
+
+    const filipinoVerbs = ['maghatid', 'magbuo', 'magde-develop', 'magdevelop', 'magpapatupad', 'maglunsad'];
+    filipinoVerbs.forEach(verb => {
+      if (text.includes(verb)) phrases.push(verb);
+    });
+
     return phrases;
   }
 
