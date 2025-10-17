@@ -23,6 +23,8 @@ import { ASRHealthChecker } from './utils/asrHealthCheck';
 import { ASRProviderController } from './utils/providerController';
 import { LocalASRClient } from './utils/localASRClient';
 import { MetricsLogger } from './utils/metricsLogger';
+import { discoveryManager } from './core/discoveryManager';
+import { topicAlignmentGate } from './core/topicAlignment';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 import electronSquirrelStartup from "electron-squirrel-startup";
@@ -833,7 +835,7 @@ const startDeepgramConnection = async (deepgramKey: string): Promise<{ success: 
       model: "nova-2",
       language: "en",
       encoding: "linear16",
-      sample_rate: 16000,
+      sample_rate: 48000,
       endpointing: 6000, // Increased from 3000ms for better continuity
       vad_events: true, // Voice Activity Detection
       filler_words: true, // Capture natural speech patterns
@@ -970,29 +972,22 @@ const startLocalASRConnection = async (config: any): Promise<{ success: boolean,
   }
 };
 
-ipcMain.handle("send-audio-to-deepgram", async (event, audioData) => {
-  // Route audio based on active provider
-  if (activeASRProvider === 'local' && localASRClient) {
-    try {
+ipcMain.on('send-audio-to-deepgram', async (event, audioData) => {
+  // Diagnostic logger: monitor which provider is active each frame
+  console.log('🧩 Sending audio chunk to provider:', activeASRProvider);
+
+  try {
+    if (activeASRProvider === 'local' && localASRClient) {
+      console.log("🧪 Calling localASRClient.sendAudioChunk with audioData size:", audioData?.byteLength);
       await localASRClient.sendAudioChunk(audioData);
-    } catch (error) {
-      console.error('❌ Failed to send audio to local ASR:', error);
-      // Handle local ASR failure
-      const config = await store.get("config") || {};
-      await handleLocalASRFailure(config);
-    }
-  } else if (activeASRProvider === 'deepgram' && deepgramConnection) {
-    try {
+    } else if (activeASRProvider === 'deepgram' && deepgramConnection) {
       const buffer = Buffer.from(audioData);
       deepgramConnection.send(buffer);
-    } catch (error) {
-      console.error("❌ Failed to send data to Deepgram:", error);
-      // Handle Deepgram failure
-      const config = await store.get("config") || {};
-      await handleDeepgramFailure(config);
+    } else {
+      console.warn('⚠️ No active ASR provider or connection not ready.');
     }
-  } else {
-    console.warn('⚠️ No active ASR provider or connection not ready');
+  } catch (err) {
+    console.error('ASR send error:', err);
   }
 });
 
@@ -1006,6 +1001,9 @@ ipcMain.handle("stop-deepgram", () => {
     localASRClient = null;
   }
   activeASRProvider = null;
+  
+  // Reset provider tracking to allow fresh selection on next start
+  ASRProviderController.resetCurrentProvider();
 });
 
 // Handle local ASR transcript events
@@ -1061,6 +1059,44 @@ ipcMain.handle("get-metrics-summary", async () => {
       return { success: false, error: 'Metrics logger not initialized' };
     }
   } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+// Discovery Manager IPC handlers
+ipcMain.handle("capture-discovery", async (event, transcript: string) => {
+  try {
+    const success = await discoveryManager.captureDiscovery(transcript);
+    return { success };
+  } catch (error) {
+    console.error('Failed to capture discovery:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle("reset-discovery-session", async () => {
+  try {
+    discoveryManager.resetSession();
+    topicAlignmentGate.resetTopics();
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to reset discovery session:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+});
+
+ipcMain.handle("get-topic-alignment-status", async () => {
+  try {
+    const activeTopic = topicAlignmentGate.getActiveTopic();
+    const topicHistory = topicAlignmentGate.getTopicHistory();
+    return { 
+      success: true, 
+      activeTopic, 
+      topicCount: topicHistory.length,
+      topics: topicHistory.map(t => ({ topic: t.topic, timestamp: t.timestamp }))
+    };
+  } catch (error) {
+    console.error('Failed to get topic alignment status:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 });

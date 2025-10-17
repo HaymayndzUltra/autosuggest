@@ -17,6 +17,9 @@ import ReactMarkdown from 'react-markdown';
 import { suggestionEngine } from '../utils/reasoningEngine';
 import { ASRProviderController } from '../utils/providerController';
 
+// Safety cap for EventEmitter to prevent listener warnings
+require("events").EventEmitter.defaultMaxListeners = 30;
+
 const InterviewPage: React.FC = () => {
   const { knowledgeBase, conversations, addConversation, clearConversations } = useKnowledgeBase();
   const { promptConfig, buildSystemMessage, contextData } = usePrompt();
@@ -43,11 +46,13 @@ const InterviewPage: React.FC = () => {
   const [isAutoGPTEnabled, setIsAutoGPTEnabled] = useState(false);
   const [userMedia, setUserMedia] = useState<MediaStream | null>(null);
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
-  const [processor, setProcessor] = useState<ScriptProcessorNode | null>(null);
+  const [workletNode, setWorkletNode] = useState<AudioWorkletNode | null>(null);
+  const [resamplerWorker, setResamplerWorker] = useState<Worker | null>(null);
   const [autoSubmitTimer, setAutoSubmitTimer] = useState<NodeJS.Timeout | null>(null);
   const [activeASRProvider, setActiveASRProvider] = useState<'local' | 'deepgram' | null>(null);
   const [asrHealthStatus, setAsrHealthStatus] = useState<{ local: any, deepgram: any } | null>(null);
   const [showHelperModal, setShowHelperModal] = useState(false);
+  const [discoveryModeEnabled, setDiscoveryModeEnabled] = useState(true);
   const aiResponseRef = useRef<HTMLDivElement>(null);
   const lastFinalTranscriptRef = useRef<string>('');
   const currentTextRef = useRef<string>(currentText);
@@ -215,95 +220,12 @@ const InterviewPage: React.FC = () => {
     handleAskGPT(newContent);
   }, [handleAskGPT]);
 
-  useEffect(() => {
-    let lastTranscriptTime = Date.now();
-    let checkTimer: NodeJS.Timeout | null = null;
-
-    const handleDeepgramTranscript = (_event: any, data: any) => {
-      if (data.transcript && data.is_final) {
-        setCurrentText((prev: string) => {
-          const incoming = String(data.transcript || '').replace(/\s+/g, ' ').trim();
-          if (!incoming) {
-            return prev;
-          }
-
-          const prevTrimmed = prev.replace(/\s+$/g, '');
-
-          if (prevTrimmed.endsWith(incoming) || incoming === lastFinalTranscriptRef.current) {
-            return prev;
-          }
-
-          lastTranscriptTime = Date.now();
-
-          const shouldMergeWord =
-            /[\p{L}\p{N}]$/u.test(prevTrimmed) &&
-            /^[\p{L}\p{N}]/u.test(incoming);
-
-          const updatedText = (() => {
-            if (!prevTrimmed) {
-              return incoming;
-            }
-
-            if (shouldMergeWord) {
-              return (prevTrimmed + incoming).trim();
-            }
-
-            return `${prevTrimmed} ${incoming}`.trim();
-          })();
-
-          lastFinalTranscriptRef.current = incoming;
-          currentTextRef.current = updatedText;
-
-          if (isAutoGPTEnabled) {
-            if (autoSubmitTimer) {
-              clearTimeout(autoSubmitTimer);
-            }
-            const newTimer = setTimeout(() => {
-              const newContent = updatedText.slice(lastProcessedIndexRef.current);
-              if (newContent.trim()) {
-                // Use suggestion generation instead of full GPT call
-                handleSuggestionGeneration(newContent);
-              }
-            }, 300); // Faster turnaround for real-time suggestions
-            setAutoSubmitTimer(newTimer);
-          }
-
-          return updatedText;
-        });
-      } else if (data.transcript && !data.is_final) {
-        // Handle interim results for real-time feedback
-        const interimText = data.transcript.trim();
-        if (interimText) {
-          // Show interim text in a temporary way (optional enhancement)
-          console.log('Interim transcript:', interimText);
-        }
-      }
-    };
-
-    const checkAndSubmit = () => {
-      if (isAutoGPTEnabled && Date.now() - lastTranscriptTime >= 300) { // Match the faster streaming cadence
-        const newContent = currentText.slice(lastProcessedIndexRef.current);
-        if (newContent.trim()) {
-          handleSuggestionGeneration(newContent);
-        }
-      }
-      checkTimer = setTimeout(checkAndSubmit, 600);
-    };
-
-    window.electronAPI.ipcRenderer.on('deepgram-transcript', handleDeepgramTranscript);
-    checkTimer = setTimeout(checkAndSubmit, 600);
-
-    return () => {
-      window.electronAPI.ipcRenderer.removeListener('deepgram-transcript', handleDeepgramTranscript);
-      if (checkTimer) {
-        clearTimeout(checkTimer);
-      }
-    };
-  }, [isAutoGPTEnabled, lastProcessedIndex, currentText, handleSuggestionGeneration, setCurrentText, setLastProcessedIndex]);
-
   const loadConfig = async () => {
     try {
       const config = await window.electronAPI.getConfig();
+      
+      // Load discovery mode setting
+      setDiscoveryModeEnabled(config.discoveryModeEnabled !== false); // Default to true
       
       // Check ASR health
       const healthStatus = await window.electronAPI.checkASRHealth(config);
@@ -362,7 +284,6 @@ const InterviewPage: React.FC = () => {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 16000,
         },
       });
       setUserMedia(stream);
@@ -374,44 +295,90 @@ const InterviewPage: React.FC = () => {
         throw new Error(result.error);
       }
 
-      // Set up audio processing
-      const context = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      // Set up audio processing with AudioWorklet
+      const context = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
       setAudioContext(context);
+      
+      // Diagnostic logging
+      console.log('🎤 Mic input initialized:', stream.getTracks()[0].enabled);
+      console.log('🎧 AudioContext state:', context.state);
+      console.log('🎧 AudioContext sample rate:', context.sampleRate);
+      
+      // Load the audio worklet processor
+      try {
+        await context.audioWorklet.addModule('/audio-processor.js');
+        console.log('✅ AudioWorklet loaded successfully');
+      } catch (err) {
+        console.error('❌ Failed to load AudioWorklet:', err);
+        throw new Error('AudioWorklet loading failed');
+      }
+      
       const source = context.createMediaStreamSource(stream);
       
-      // Create audio processing chain for noise reduction and enhancement
-      const compressor = context.createDynamicsCompressor();
-      compressor.threshold.value = -24;
-      compressor.knee.value = 30;
-      compressor.ratio.value = 12;
-      compressor.attack.value = 0.003;
-      compressor.release.value = 0.25;
-      
-      const highPassFilter = context.createBiquadFilter();
-      highPassFilter.type = 'highpass';
-      highPassFilter.frequency.value = 80; // Remove low-frequency noise
-      
+      // Create simple muted audio chain (like interviewer2)
       const gainNode = context.createGain();
-      gainNode.gain.value = 1.2; // Slight volume boost
+      gainNode.gain.value = 0; // Mute to prevent feedback
+      source.connect(gainNode);
       
-      const processor = context.createScriptProcessor(4096, 1, 1);
-      setProcessor(processor);
+      // Create AudioWorkletNode
+      const worklet = new AudioWorkletNode(context, 'pcm-worklet');
+      setWorkletNode(worklet);
+      
+      // Connect simple chain: source -> gain(muted) -> worklet -> destination
+      gainNode.connect(worklet);
+      worklet.connect(context.destination);
 
-      // Connect audio chain: source -> compressor -> filter -> gain -> processor -> destination
-      source.connect(compressor);
-      compressor.connect(highPassFilter);
-      highPassFilter.connect(gainNode);
-      gainNode.connect(processor);
-      processor.connect(context.destination);
-
-      processor.onaudioprocess = (e: { inputBuffer: { getChannelData: (arg0: number) => any; }; }) => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        const audioData = new Int16Array(inputData.length);
-        for (let i = 0; i < inputData.length; i++) {
-          audioData[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+      // Handle PCM chunks from worklet with diagnostic logging
+      let frameCount = 0;
+      worklet.port.onmessage = (e) => {
+        if (e.data?.byteLength) {
+          frameCount++;
+          if (frameCount % 50 === 0) {
+            console.log('🎧 Frames:', frameCount, '| Provider:', selectedProvider);
+          }
+          
+          // Direct send without conversion for Deepgram (48kHz)
+          if (selectedProvider === 'deepgram') {
+            window.electronAPI.ipcRenderer.send('send-audio-to-deepgram', e.data);
+          }
+          // Resample for local ASR (16kHz)
+          else if (selectedProvider === 'local' && resamplerWorker) {
+            const float32 = new Float32Array(e.data);
+            resamplerWorker.postMessage({ float32_48k: float32, targetSampleRate: 16000 });
+          }
         }
-        window.electronAPI.ipcRenderer.invoke('send-audio-to-deepgram', audioData.buffer);
       };
+
+      // Optional: Set up resampler worker if needed (for 16kHz ASR)
+      if (selectedProvider === 'local') {
+        try {
+          console.log('🔄 Initializing resampler worker for local ASR...');
+          const worker = new Worker('/pcm-worker.js');
+          setResamplerWorker(worker);
+          console.log('✅ Resampler worker initialized successfully');
+          
+          // ✅ DON'T override worklet.port.onmessage - the handler at line 333 already handles this correctly
+          // ✅ It checks for resamplerWorker and posts to it
+          
+          worker.onmessage = (event) => {
+            if (event.data.error) {
+              console.error('Resampler error:', event.data.error);
+              return;
+            }
+
+            const resampledSamples = event.data.out as Float32Array;
+            const audioData = new Int16Array(resampledSamples.length);
+            for (let i = 0; i < resampledSamples.length; i++) {
+              audioData[i] = Math.max(-1, Math.min(1, resampledSamples[i])) * 0x7FFF;
+            }
+
+            console.log('📤 Sending resampled audio to main process:', audioData.buffer.byteLength, 'bytes');
+            window.electronAPI.ipcRenderer.send('send-audio-to-deepgram', audioData.buffer);
+          };
+        } catch (error) {
+          console.warn('Resampler worker not available, using direct 48kHz:', error);
+        }
+      }
 
       setIsRecording(true);
     } catch (err: any) {
@@ -426,42 +393,87 @@ const InterviewPage: React.FC = () => {
     if (audioContext) {
       audioContext.close();
     }
-    if (processor) {
-      processor.disconnect();
+    if (workletNode) {
+      workletNode.disconnect();
+    }
+    if (resamplerWorker) {
+      resamplerWorker.terminate();
     }
     window.electronAPI.stopASR();
     setIsRecording(false);
     setUserMedia(null);
     setAudioContext(null);
-    setProcessor(null);
+    setWorkletNode(null);
+    setResamplerWorker(null);
     setActiveASRProvider(null);
   };
 
+  // Consolidated IPC listeners with proper cleanup
   useEffect(() => {
     loadConfig();
     
-    // Listen for ASR provider changes
+    // Handle ASR provider changes
     const handleProviderChange = (_event: any, data: any) => {
       console.log('🔄 ASR Provider changed:', data);
       setActiveASRProvider(data.to);
       
-      // Show toast notification
       if (data.from && data.to) {
         const message = `Switched to ${ASRProviderController.getProviderLabel(data.to)} (${data.reason})`;
-        // You could implement a toast notification here
         console.log('📢 Toast:', message);
       }
     };
     
-    window.electronAPI.ipcRenderer.on('asr-provider-changed', handleProviderChange);
+    // Handle transcript updates
+    const handleDeepgramTranscript = (_event: any, data: any) => {
+      if (data.transcript && data.is_final) {
+        const incoming = data.transcript.trim();
+        if (incoming) {
+          const updatedText = currentText + (currentText ? ' ' : '') + incoming;
+          setCurrentText(updatedText);
+          setLastTranscriptChunk(incoming);
+          
+          // Discovery capture (non-blocking)
+          if (discoveryModeEnabled) {
+            window.electronAPI.captureDiscovery(incoming).catch(err => 
+              console.error('Discovery capture failed:', err)
+            );
+          }
+          
+          // Auto GPT processing
+          if (isAutoGPTEnabled) {
+            if (autoSubmitTimer) {
+              clearTimeout(autoSubmitTimer);
+            }
+            const newTimer = setTimeout(async () => {
+              const newContent = updatedText.slice(lastProcessedIndexRef.current);
+              if (newContent.trim()) {
+                handleSuggestionGeneration(newContent);
+              }
+            }, 300);
+            setAutoSubmitTimer(newTimer);
+          }
+        }
+      }
+    };
     
+    // Register listeners
+    window.electronAPI.ipcRenderer.on('asr-provider-changed', handleProviderChange);
+    window.electronAPI.ipcRenderer.on('deepgram-transcript', handleDeepgramTranscript);
+    
+    // Cleanup function
     return () => {
       window.electronAPI.ipcRenderer.removeListener('asr-provider-changed', handleProviderChange);
+      window.electronAPI.ipcRenderer.removeListener('deepgram-transcript', handleDeepgramTranscript);
+      
       if (isRecording) {
         stopRecording();
       }
+      
+      if (autoSubmitTimer) {
+        clearTimeout(autoSubmitTimer);
+      }
     };
-  }, [isRecording]);
+  }, [isRecording, isAutoGPTEnabled, discoveryModeEnabled, currentText, lastProcessedIndex]);
 
 
   useEffect(() => {

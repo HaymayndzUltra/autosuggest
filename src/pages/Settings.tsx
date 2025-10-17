@@ -21,6 +21,7 @@ const Settings: React.FC = () => {
   const [asrProvider, setAsrProvider] = useState<'auto' | 'local' | 'deepgram'>('auto');
   const [localAsrUrl, setLocalAsrUrl] = useState('http://127.0.0.1:9001');
   const [asrHealthStatus, setAsrHealthStatus] = useState<{ local: any, deepgram: any } | null>(null);
+  const [discoveryModeEnabled, setDiscoveryModeEnabled] = useState(true);
 
   useEffect(() => {
     loadConfig();
@@ -38,6 +39,7 @@ const Settings: React.FC = () => {
       setDeepgramApiKey(config.deepgram_api_key || '');
       setAsrProvider(config.asr_provider || 'auto');
       setLocalAsrUrl(config.local_asr_url || 'http://127.0.0.1:9001');
+      setDiscoveryModeEnabled(config.discoveryModeEnabled !== false); // Default to true
       
       // Load prompt config if available
       if (config.promptConfig) {
@@ -64,6 +66,7 @@ const Settings: React.FC = () => {
         asr_provider: asrProvider,
         local_asr_url: localAsrUrl,
         promptConfig: promptConfig,
+        discoveryModeEnabled: discoveryModeEnabled,
       });
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -397,6 +400,27 @@ const Settings: React.FC = () => {
           )}
         </>
       )}
+      
+      {/* Discovery Mode Section */}
+      <div className="divider my-8"></div>
+      <h2 className="text-xl font-bold mb-4">Discovery Capture Configuration</h2>
+      
+      <div className="mb-4">
+        <label className="label">
+          <span className="label-text">Discovery Capture Mode</span>
+          <input
+            type="checkbox"
+            checked={discoveryModeEnabled}
+            onChange={(e) => setDiscoveryModeEnabled(e.target.checked)}
+            className="checkbox checkbox-primary"
+          />
+        </label>
+        <label className="label">
+          <span className="label-text-alt">
+            Automatically capture client context from interview conversation
+          </span>
+        </label>
+      </div>
       
       <div className="flex justify-between mt-4">
         <button onClick={handleSave} className="btn btn-primary">

@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkASRHealth: (config: any) => ipcRenderer.invoke('check-asr-health', config),
   exportMetrics: () => ipcRenderer.invoke('export-metrics'),
   getMetricsSummary: () => ipcRenderer.invoke('get-metrics-summary'),
+  captureDiscovery: (transcript: string) => ipcRenderer.invoke('capture-discovery', transcript),
+  resetDiscoverySession: () => ipcRenderer.invoke('reset-discovery-session'),
+  getTopicAlignmentStatus: () => ipcRenderer.invoke('get-topic-alignment-status'),
   onContextFilesUpdated: (listener: (payload: any) => void) => {
     const handler = (_event: unknown, payload: any) => listener(payload);
     ipcRenderer.on('context-files-updated', handler);
@@ -26,6 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   ipcRenderer: {
     invoke: (channel: string, ...args: any[]) => ipcRenderer.invoke(channel, ...args),
+    send: (channel: string, ...args: any[]) => ipcRenderer.send(channel, ...args),
     on: (channel: string, listener: (event: any, ...args: any[]) => void) => {
       ipcRenderer.on(channel, listener);
       return () => ipcRenderer.removeListener(channel, listener);

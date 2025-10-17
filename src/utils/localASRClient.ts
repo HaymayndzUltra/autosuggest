@@ -1,4 +1,5 @@
-import axios from 'axios';
+import axios from './httpTracer';
+import { BrowserWindow } from 'electron';
 
 /**
  * Client for communicating with local ASR service
@@ -51,10 +52,13 @@ export class LocalASRClient {
    * Send audio chunk to local ASR
    */
   async sendAudioChunk(buffer: ArrayBuffer): Promise<void> {
+    console.log("🧪 sendAudioChunk invoked, buffer size:", buffer?.byteLength);
     if (!this.isConnected) {
-      console.warn('⚠️ Local ASR not connected, dropping audio chunk');
+      console.warn("⚠️ sendAudioChunk skipped, not connected");
       return;
     }
+
+    console.log("📤 Preparing FormData...");
 
     // Add to buffer
     this.audioBuffer.push(buffer);
@@ -86,6 +90,7 @@ export class LocalASRClient {
    * Process batched audio data
    */
   private async processBatch(): Promise<void> {
+    console.log("🔄 processBatch() started, buffer length:", this.audioBuffer.length);
     if (this.isProcessingBatch) {
       this.pendingProcess = true;
       return;
@@ -117,6 +122,7 @@ export class LocalASRClient {
           }
 
           // Send to local ASR
+          console.log("🚀 Calling sendBatchToASR with combined buffer size:", combinedBuffer.byteLength);
           await this.sendBatchToASR(combinedBuffer);
 
           // Reset failure count on success
@@ -209,6 +215,11 @@ export class LocalASRClient {
       formData.append('audio_file', audioBlob, 'audio.wav');
       
       console.log(`📤 Sending audio batch: ${wavBuffer.byteLength} bytes`);
+      console.log("📤 Posting to:", this.baseUrl + "/asr?task=transcribe");
+      
+      console.log("🧪 sendAudioChunk triggered");
+      console.log("📦 Buffer:", audioBuffer?.byteLength);
+      console.log("🔗 URL:", this.baseUrl + "/asr?task=transcribe");
 
       const response = await axios.post(`${this.baseUrl}/asr?task=transcribe`, formData, {
         headers: {
@@ -218,16 +229,16 @@ export class LocalASRClient {
         validateStatus: (status) => status < 500,
       });
 
+      console.log("✅ ASR Response:", response.status, response.data);
       if (response.status >= 200 && response.status < 300) {
         // Parse response and emit transcript event
         const transcriptData = response.data;
 
         if (transcriptData && transcriptData.text) {
-          // Emit transcript event (this will be handled by the main process)
-          // We'll use a custom event for local ASR transcripts
-          if (typeof window !== 'undefined' && window.electronAPI) {
-            // This is a renderer context - emit to main process
-            window.electronAPI.ipcRenderer.invoke('local-asr-transcript', {
+          // ✅ Emit directly from main process to renderer
+          const mainWindow = BrowserWindow.getAllWindows()[0];
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('deepgram-transcript', {
               transcript: transcriptData.text,
               is_final: true,
               provider: 'local',

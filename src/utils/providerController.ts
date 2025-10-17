@@ -6,6 +6,9 @@ import { ASRProvider, ASRHealthStatus } from '../renderer.d';
 export class ASRProviderController {
   private static readonly MAX_FAILURES = 3;
   
+  // Keep track of the last active provider
+  private static currentProvider: 'local' | 'deepgram' | 'auto' | null = null;
+  
   /**
    * Select the appropriate ASR provider based on mode and health status
    */
@@ -16,44 +19,59 @@ export class ASRProviderController {
   ): 'local' | 'deepgram' | null {
     console.log('🎯 Selecting ASR provider:', { mode, localHealthy: localHealth.healthy, hasDeepgramKey });
     
+    let newProvider: 'local' | 'deepgram' = 'local';
+
     switch (mode) {
       case 'auto':
         // Prefer local if healthy, fallback to Deepgram if key exists
         if (localHealth.healthy) {
           console.log('✅ Auto mode: Selected local ASR (healthy)');
-          return 'local';
+          newProvider = 'local';
         } else if (hasDeepgramKey) {
           console.log('✅ Auto mode: Selected Deepgram (local down, key available)');
-          return 'deepgram';
+          newProvider = 'deepgram';
         } else {
           console.log('❌ Auto mode: No providers available');
           return null;
         }
+        break;
         
       case 'local':
         // Require local to be healthy
         if (localHealth.healthy) {
           console.log('✅ Local mode: Selected local ASR');
-          return 'local';
+          newProvider = 'local';
         } else {
           console.log('❌ Local mode: Local ASR not healthy');
           return null;
         }
+        break;
         
       case 'deepgram':
         // Require Deepgram key
         if (hasDeepgramKey) {
           console.log('✅ Deepgram mode: Selected Deepgram');
-          return 'deepgram';
+          newProvider = 'deepgram';
         } else {
           console.log('❌ Deepgram mode: No API key');
           return null;
         }
+        break;
         
       default:
         console.log('❌ Unknown mode:', mode);
         return null;
     }
+
+    // 🧠 Prevent unnecessary re-selection
+    if (this.currentProvider === newProvider) {
+      console.log(`🔒 Provider already active: ${newProvider}, skipping re-initialization`);
+      return newProvider; // Return the provider but skip duplicate initialization
+    }
+    this.currentProvider = newProvider;
+
+    console.log(`🎯 Selecting ASR provider: ${newProvider}`);
+    return newProvider;
   }
   
   /**
@@ -199,5 +217,13 @@ export class ASRProviderController {
           description: 'Unknown mode',
         };
     }
+  }
+
+  /**
+   * Reset the current provider tracking (call when stopping recording)
+   */
+  static resetCurrentProvider(): void {
+    console.log('🔄 Resetting provider tracking');
+    this.currentProvider = null;
   }
 }

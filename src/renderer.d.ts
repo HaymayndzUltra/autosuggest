@@ -64,6 +64,7 @@ export interface ElectronAPI {
   ipcRenderer: {
     removeAllListeners: any;
     invoke(channel: string, ...args: any[]): Promise<any>;
+    send(channel: string, ...args: any[]): void;
     on(channel: string, listener: (event: any, ...args: any[]) => void): void;
     removeListener(channel: string, listener: (...args: any[]) => void): void;
   };
@@ -82,6 +83,9 @@ export interface ElectronAPI {
   stopASR: () => Promise<void>;
   exportMetrics: () => Promise<{ success: boolean, data?: string, error?: string }>;
   getMetricsSummary: () => Promise<{ success: boolean, data?: any, error?: string }>;
+  captureDiscovery: (transcript: string) => Promise<{ success: boolean, error?: string }>;
+  resetDiscoverySession: () => Promise<{ success: boolean, error?: string }>;
+  getTopicAlignmentStatus: () => Promise<{ success: boolean, activeTopic?: string, topicCount?: number, topics?: Array<{ topic: string, timestamp: number }>, error?: string }>;
   transcribeAudio: (audioBuffer: ArrayBuffer, config: any) => Promise<TranscriptionResult>;
 }
 
