@@ -47,7 +47,7 @@ const InterviewPage: React.FC = () => {
   const [userMedia, setUserMedia] = useState<MediaStream | null>(null);
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
   const [workletNode, setWorkletNode] = useState<AudioWorkletNode | null>(null);
-  const [resamplerWorker, setResamplerWorker] = useState<Worker | null>(null);
+  const resamplerWorkerRef = useRef<Worker | null>(null);
   const [autoSubmitTimer, setAutoSubmitTimer] = useState<NodeJS.Timeout | null>(null);
   const [activeASRProvider, setActiveASRProvider] = useState<'local' | 'deepgram' | null>(null);
   const [asrHealthStatus, setAsrHealthStatus] = useState<{ local: any, deepgram: any } | null>(null);
@@ -336,15 +336,15 @@ const InterviewPage: React.FC = () => {
           if (frameCount % 50 === 0) {
             console.log('🎧 Frames:', frameCount, '| Provider:', selectedProvider);
           }
-          
+
           // Direct send without conversion for Deepgram (48kHz)
           if (selectedProvider === 'deepgram') {
             window.electronAPI.ipcRenderer.send('send-audio-to-deepgram', e.data);
           }
           // Resample for local ASR (16kHz)
-          else if (selectedProvider === 'local' && resamplerWorker) {
+          else if (selectedProvider === 'local' && resamplerWorkerRef.current) {
             const float32 = new Float32Array(e.data);
-            resamplerWorker.postMessage({ float32_48k: float32, targetSampleRate: 16000 });
+            resamplerWorkerRef.current.postMessage({ float32_48k: float32, targetSampleRate: 16000 });
           }
         }
       };
@@ -353,13 +353,16 @@ const InterviewPage: React.FC = () => {
       if (selectedProvider === 'local') {
         try {
           console.log('🔄 Initializing resampler worker for local ASR...');
+          if (resamplerWorkerRef.current) {
+            resamplerWorkerRef.current.terminate();
+          }
           const worker = new Worker('/pcm-worker.js');
-          setResamplerWorker(worker);
+          resamplerWorkerRef.current = worker;
           console.log('✅ Resampler worker initialized successfully');
-          
+
           // ✅ DON'T override worklet.port.onmessage - the handler at line 333 already handles this correctly
           // ✅ It checks for resamplerWorker and posts to it
-          
+
           worker.onmessage = (event) => {
             if (event.data.error) {
               console.error('Resampler error:', event.data.error);
@@ -377,6 +380,11 @@ const InterviewPage: React.FC = () => {
           };
         } catch (error) {
           console.warn('Resampler worker not available, using direct 48kHz:', error);
+        }
+      } else {
+        if (resamplerWorkerRef.current) {
+          resamplerWorkerRef.current.terminate();
+          resamplerWorkerRef.current = null;
         }
       }
 
@@ -396,15 +404,15 @@ const InterviewPage: React.FC = () => {
     if (workletNode) {
       workletNode.disconnect();
     }
-    if (resamplerWorker) {
-      resamplerWorker.terminate();
+    if (resamplerWorkerRef.current) {
+      resamplerWorkerRef.current.terminate();
+      resamplerWorkerRef.current = null;
     }
     window.electronAPI.stopASR();
     setIsRecording(false);
     setUserMedia(null);
     setAudioContext(null);
     setWorkletNode(null);
-    setResamplerWorker(null);
     setActiveASRProvider(null);
   };
 
