@@ -1,5 +1,6 @@
 import axios from './httpTracer';
 import { BrowserWindow } from 'electron';
+import FormData from 'form-data';
 
 /**
  * Client for communicating with local ASR service
@@ -34,6 +35,7 @@ export class LocalASRClient {
       });
 
       if (response.status >= 200 && response.status < 300) {
+        console.log(`✅ Local ASR health check passed (${response.status})`);
         this.isConnected = true;
         this.failureCount = 0;
         console.log('✅ Local ASR connected successfully');
@@ -208,28 +210,36 @@ export class LocalASRClient {
   private async sendBatchToASR(audioBuffer: ArrayBuffer): Promise<void> {
     try {
       const formData = new FormData();
-      
-      // Convert raw audio buffer to proper WAV format
-      const wavBuffer = this.createWAVBuffer(audioBuffer);
-      const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
-      formData.append('audio_file', audioBlob, 'audio.wav');
-      
-      console.log(`📤 Sending audio batch: ${wavBuffer.byteLength} bytes`);
-      console.log("📤 Posting to:", this.baseUrl + "/asr?task=transcribe");
-      
-      console.log("🧪 sendAudioChunk triggered");
-      console.log("📦 Buffer:", audioBuffer?.byteLength);
-      console.log("🔗 URL:", this.baseUrl + "/asr?task=transcribe");
 
-      const response = await axios.post(`${this.baseUrl}/asr?task=transcribe`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
+      // Convert raw audio buffer to proper WAV format and append via Node FormData
+      const wavBuffer = this.createWAVBuffer(audioBuffer);
+      const wavPayload = Buffer.from(wavBuffer);
+      formData.append('audio_file', wavPayload, {
+        filename: 'audio.wav',
+        contentType: 'audio/wav',
+      });
+
+      const targetUrl = `${this.baseUrl}/asr?task=transcribe`;
+      console.log(`📤 Sending audio batch: ${wavPayload.byteLength} bytes`);
+      console.log('🔍 axios about to POST to', targetUrl, 'payload size:', wavPayload.byteLength);
+
+      const nodeFormData = formData as unknown as { getHeaders?: () => Record<string, string> };
+      const headers =
+        typeof nodeFormData.getHeaders === 'function'
+          ? nodeFormData.getHeaders()
+          : { 'Content-Type': 'multipart/form-data' };
+
+      const response = await axios.request({
+        method: 'POST',
+        url: targetUrl,
+        data: formData,
+        headers,
         timeout: 60000, // 60 second timeout (increased for CPU processing)
         validateStatus: (status) => status < 500,
       });
 
-      console.log("✅ ASR Response:", response.status, response.data);
+      console.log('✅ ASR Response:', response.status, response.statusText);
+      console.log('📝 ASR Payload:', response.data);
       if (response.status >= 200 && response.status < 300) {
         // Parse response and emit transcript event
         const transcriptData = response.data;
@@ -255,7 +265,12 @@ export class LocalASRClient {
           console.warn('⏰ ASR timeout - audio processing too slow, trying fallback');
           // Don't throw error immediately, let the failure handler deal with it
         } else {
-          console.error('❌ ASR request failed:', error.message);
+          const status = error.response?.status;
+          const statusText = error.response?.statusText;
+          console.error('❌ ASR request failed:', error.message, status ? `(status ${status} ${statusText ?? ''})` : '');
+          if (error.response?.data) {
+            console.error('❌ ASR error payload:', error.response.data);
+          }
         }
       } else {
         console.error('❌ Failed to send audio batch to ASR:', error);
